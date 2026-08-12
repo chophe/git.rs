@@ -1,0 +1,11 @@
+[package]
+name = "git-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Repository discovery and layout"
+
+[dependencies]
+git-hash = { path = "../git-hash" }
+git-config = { path = "../git-config" }

@@ -1,0 +1,10 @@
+[package]
+name = "git-object"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Git object model: kinds, headers, and object ids"
+
+[dependencies]
+git-hash = { path = "../git-hash" }

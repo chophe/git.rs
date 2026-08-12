@@ -1,0 +1,17 @@
+[package]
+name = "git-command"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Plumbing command implementations (hash-object, commit-tree, ...)"
+
+[dependencies]
+git-hash = { path = "../git-hash" }
+git-object = { path = "../git-object" }
+git-core = { path = "../git-core" }
+git-odb = { path = "../git-odb" }
+git-date = { path = "../git-date" }
+
+[dev-dependencies]
+git-config = { path = "../git-config" }

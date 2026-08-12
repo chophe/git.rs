@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+members = [
+    "git-hash",
+    "git-varint",
+    "git-date",
+    "git-config",
+    "git-core",
+    "git-cli",
+    "git-command",
+    "git-object",
+    "git-odb",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.74"
+license = "GPL-2.0-only"
+
+[profile.release]
+debug = true

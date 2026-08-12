@@ -1,0 +1,14 @@
+[package]
+name = "git-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The git command-line dispatcher"
+
+[dependencies]
+git-command = { path = "../git-command" }
+
+[[bin]]
+name = "git"
+path = "src/main.rs"

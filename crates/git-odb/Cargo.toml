@@ -1,0 +1,16 @@
+[package]
+name = "git-odb"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Git object database: loose object store"
+
+[dependencies]
+git-hash = { path = "../git-hash" }
+git-object = { path = "../git-object" }
+git-core = { path = "../git-core" }
+flate2 = "1"
+
+[dev-dependencies]
+git-config = { path = "../git-config" }
