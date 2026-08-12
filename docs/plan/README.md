@@ -84,5 +84,6 @@ criteria 1–8 one-command, CI-enforced, and regression-tracked.
 ## Reading order
 
 1. [test-infrastructure.md](test-infrastructure.md) — the test/oracle machinery.
-2. [phase-0-foundation.md](phase-0-foundation.md), [phase-1-loose-objects.md](phase-1-loose-objects.md) — Part 1.
-3. Phases 2–9 in dependency order.
+2. [FOLLOWUPS.md](FOLLOWUPS.md) — the actionable backlog (deferred code, infra, deviations).
+3. [phase-0-foundation.md](phase-0-foundation.md), [phase-1-loose-objects.md](phase-1-loose-objects.md) — Part 1.
+4. Phases 2–9 in dependency order.
