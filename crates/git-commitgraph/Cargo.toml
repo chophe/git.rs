@@ -1,0 +1,10 @@
+[package]
+name = "git-commitgraph"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Commit-graph and chunk-based file formats (read/verify)"
+
+[dependencies]
+git-hash = { path = "../git-hash" }
