@@ -130,3 +130,36 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod props {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// Arbitrary values (that do not overflow u64 during encode) must
+        /// round-trip exactly through encode -> decode.
+        #[test]
+        fn encode_decode_round_trips(value: u64) {
+            if value <= u64::MAX / 2 {
+                let mut buf = [0u8; VARINT_MAX_BYTES];
+                let n = encode(value, &mut buf);
+                let mut slice = &buf[..n];
+                prop_assert_eq!(decode(&mut slice), Some(value));
+                prop_assert!(slice.is_empty());
+            }
+        }
+
+        /// Encoding is deterministic: same value, same bytes.
+        #[test]
+        fn encode_is_deterministic(a: u64, b: u64) {
+            let mut x = [0u8; VARINT_MAX_BYTES];
+            let mut y = [0u8; VARINT_MAX_BYTES];
+            let nx = encode(a, &mut x);
+            let ny = encode(a, &mut y);
+            prop_assert_eq!(nx, ny);
+            prop_assert_eq!(&x[..nx], &y[..ny]);
+            let _ = b;
+        }
+    }
+}

@@ -1,0 +1,21 @@
+#!/bin/sh
+# shim-git: dispatch ported commands to the Rust port, everything else to the
+# system C git. Used by the t/ scoreboard so the whole suite runs while the
+# port is incomplete.
+#
+# Env overrides: RUST_GIT (path to the ported binary),
+#                SYSTEM_GIT (path to the reference git).
+
+RUST_GIT="${RUST_GIT:-$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)/crates/target/debug/git}"
+SYSTEM_GIT="${SYSTEM_GIT:-/usr/bin/git}"
+
+CMD="${1:-}"
+
+case "$CMD" in
+	version|hash-object|commit-tree|verify-pack|unpack-objects|pack-objects|count-objects|multi-pack-index|commit-graph)
+		exec "$RUST_GIT" "$@"
+		;;
+	*)
+		exec "$SYSTEM_GIT" "$@"
+		;;
+esac

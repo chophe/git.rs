@@ -307,3 +307,44 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 }
+
+#[cfg(test)]
+mod props {
+    use crate::pack::{write_pack, PackFile, PackObject};
+    use git_hash::HashAlgorithm;
+    use git_object::{Object, ObjectKind};
+    use proptest::prelude::*;
+
+    proptest! {
+        /// Writing a pack of random blobs and reading it back must yield the
+        /// original objects, with all checksums intact.
+        #[test]
+        fn pack_round_trips(blobs: Vec<Vec<u8>>) {
+            let algo = HashAlgorithm::Sha1;
+            let objs: Vec<Object> = blobs
+                .into_iter()
+                .map(|d| Object::from_data(ObjectKind::Blob, d))
+                .collect();
+            let pos: Vec<PackObject> = objs
+                .iter()
+                .map(|o| PackObject {
+                    oid: o.compute_id(algo),
+                    kind: o.kind,
+                    data: o.data.clone(),
+                })
+                .collect();
+            let (pack, idx_bytes) = write_pack(&pos, algo).unwrap();
+            let idx = crate::pack::PackIndex::parse(&idx_bytes, algo).unwrap();
+            let pf = PackFile::from_bytes(pack, algo).unwrap();
+            prop_assert!(pf.verify(&idx).is_ok());
+            for obj in &objs {
+                let oid = obj.compute_id(algo);
+                let off = idx.find(&oid).unwrap() as usize;
+                let mut resolver = |_: &git_hash::Oid| -> Option<Object> { None };
+                let resolved = pf.resolve_entry(off, Some(&idx), &mut resolver).unwrap();
+                prop_assert_eq!(&resolved.object, obj);
+            }
+        }
+    }
+}
+

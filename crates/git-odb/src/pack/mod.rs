@@ -5,10 +5,12 @@ pub mod crc32;
 pub mod delta;
 pub mod file;
 pub mod index;
+pub mod midx;
 pub mod write;
 
 pub use file::PackFile;
 pub use index::PackIndex;
+pub use midx::{Midx, MidxError};
 pub use write::{write_idx, write_pack, PackObject};
 
 use std::error::Error;

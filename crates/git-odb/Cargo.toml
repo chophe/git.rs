@@ -10,7 +10,9 @@ description = "Git object database: loose object store"
 git-hash = { path = "../git-hash" }
 git-object = { path = "../git-object" }
 git-core = { path = "../git-core" }
+git-commitgraph = { path = "../git-commitgraph" }
 flate2 = "1"
 
 [dev-dependencies]
 git-config = { path = "../git-config" }
+proptest = "1"

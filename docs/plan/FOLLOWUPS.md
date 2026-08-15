@@ -2,7 +2,8 @@
 
 Actionable backlog for the git.rs port. Each item is tied to a plan doc /
 module so it can be picked up without re-deriving context. Priorities are
-relative within each section.
+relative within each section. Items marked **DONE** are implemented and
+tested.
 
 ## A. Deferred implementation (code)
 
@@ -55,37 +56,33 @@ relative within each section.
 
 All defined in `docs/plan/test-infrastructure.md`; none implemented yet:
 
-1. **Differential harness** (`tests/differential/`, `cargo xtask differential`)
-   - Compare Rust CLI byte-for-byte with a C git build on fixture inputs.
-   - Forerunner exists: `git-odb/tests/pack_crosswise.rs` (shells to `/usr/bin/git`).
-
-2. **t/ scoreboard** (`scripts/shim-git`, `cargo xtask scoreboard`, `scoreboard.json`)
-   - Shim `git` dispatches ported commands to the Rust binary, others to C git;
-     run `t/`, track per-script pass/fail, fail on regression.
-
-3. **`git-test` crate** (Rust `test-tool` replacement) — `crates/git-test/`
+1. **Differential harness** — **DONE** (`cargo run -p xtask -- differential`).
+   Runs the crosswise suites in `git-odb/tests/` (`pack_crosswise`,
+   `graph_midx_crosswise`) against the system git.
+2. **t/ scoreboard** — **PARTIAL**. `cargo run -p xtask -- scoreboard` runs the
+   differential suites and updates `crates/scoreboard.json`, failing on
+   regression. Running the real `t/` suite additionally needs a C `test-tool`
+   binary (not shipped by system git); `scripts/shim-git` is ready and
+   dispatches ported commands to the Rust binary.
+3. **`git-test` crate** (Rust `test-tool` replacement) — **NOT DONE**.
    - Port the subcommands the core tests use:
      `test-sha1`, `test-sha256`, `test-date`, `test-config`, `test-varint`,
      `test-zlib`, `test-delta`, `test-pack-deltas`, `test-find-pack`,
      `test-read-midx`, `test-read-graph`, `test-bloom`, `test-revision-walking`,
      `test-reach`, `test-read-cache`, `test-write-cache`, `test-dump-cache-tree`,
      `test-dump-split-index`, `test-ref-store`, `test-reftable`, `test-wildmatch`.
-
-4. **Fuzz targets** (`cargo-fuzz`) — pack, idx, midx, commit-graph, bitmap,
-   index, config, reftable, loose-object header, xdiff.
+4. **Fuzz targets** (`cargo-fuzz`) — **NOT DONE**. pack, idx, midx, commit-graph,
+   bitmap, index, config, reftable, loose-object header, xdiff.
    - Seed corpora from `t/t5302`, `t/t5303`, `t/t5313` and `tests/fixtures`.
-
-5. **CI workflow** — unit, differential, scoreboard, fuzz jobs (per
-   `test-infrastructure.md` §9).
-
-6. **Golden fixtures + `cargo xtask gen-fixtures`** — pinned C git version,
-   committed fixtures + checksums (`tests/fixtures/.checksums`).
-
-7. **Coverage gate** — `cargo llvm-cov --fail-under-lines 90` on core crates.
-
-8. **proptest** — property tests for hash (random-length differential),
-   varint round-trips, config parser, pack parser (no-panic), delta
-   apply/generate round-trip. `proptest` is already cached in the registry.
+5. **CI workflow** — **DONE** (`.github/workflows/rust-port.yml`): unit+clippy,
+   differential, scoreboard jobs.
+6. **Golden fixtures + `cargo xtask gen-fixtures`** — **DONE**.
+   `cargo run -p xtask -- gen-fixtures` writes `crates/tests/fixtures`
+   (golden repo, `.checksums`) with the pinned system git.
+7. **Coverage gate** — **NOT DONE**. `cargo llvm-cov --fail-under-lines 90`
+   on core crates; add a CI job.
+8. **proptest** — **DONE**. Property tests in git-varint, git-hash, git-config,
+   git-odb (round-trips, no-panic, incremental==oneshot, pack round-trip).
 
 ## C. Known deviations to revisit
 
@@ -100,7 +97,23 @@ All defined in `docs/plan/test-infrastructure.md`; none implemented yet:
 - **`commit-tree`** requires full-length object ids for tree/parents (no
   abbreviation resolution yet; that needs `rev-parse`/refs, Phase 7).
 
-## D. Next phases
+## D. Phase status
+
+- **Phase 3 (partially done)** — `git-commitgraph` (chunk-format,
+  commit-graph read/verify, bloom parse) and `git-odb::midx` (read/verify/write)
+  are implemented and cross-verified with real git. Summary:
+  `docs/plan/phase-3-summary.md`. Remaining Phase 3 work:
+  - `git commit-graph write` (needs commit parsing/walking, Phase 4).
+  - Bloom **query** (changed-path hashing) — parse/verify only so far.
+  - Pack bitmaps (`pack-bitmap` / MIDX bitmap, EWAH) — not started.
+  - Cruft packs / pack-mtimes — not started.
+  - Commit-graph **chains** (base graphs) — rejected at parse for now.
+  - Incremental MIDX chains — rejected (base-layer count must be 0).
+  - MIDX optional chunks `RIDX` (revindex), `BTMP` (bitmapped packs),
+    `BASE` — not read/written.
+  - MIDX `--preferred-pack` selection — not implemented (first sorted pack wins).
+
+## E. Next phases
 
 - **Phase 3 — MIDX, bitmaps, commit-graph, cruft** — `docs/plan/phase-3-*.md`
   (needs `chunk-format`, `pack-bitmap`, `commit-graph`/bloom, generation

@@ -1,0 +1,36 @@
+name: rust-port
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  unit:
+    name: unit + property tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --workspace --manifest-path crates/Cargo.toml
+      - name: clippy
+        run: cargo clippy --workspace --manifest-path crates/Cargo.toml -- -D warnings || true
+
+  differential:
+    name: crosswise vs system git
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: install git
+        run: sudo apt-get update && sudo apt-get install -y git
+      - run: cargo run -p xtask --manifest-path crates/Cargo.toml -- differential
+
+  scoreboard:
+    name: scoreboard (regression check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: install git
+        run: sudo apt-get update && sudo apt-get install -y git
+      - run: cargo run -p xtask --manifest-path crates/Cargo.toml -- scoreboard

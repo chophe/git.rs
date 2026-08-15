@@ -1,0 +1,11 @@
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Automation for the git.rs port (test, differential, fixtures, scoreboard)"
+publish = false
+
+[[bin]]
+name = "cargo-xtask"
+path = "src/main.rs"
