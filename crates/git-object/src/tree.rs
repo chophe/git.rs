@@ -96,31 +96,42 @@ pub fn parse_tree(data: &[u8], algo: HashAlgorithm) -> Result<Vec<TreeEntry>, Tr
     Ok(entries)
 }
 
-/// Compare two tree entry names using git's ordering: a directory sorts as if
-/// its name ended with `/`.
+/// Compare two tree entry names using git's ordering (`base_name_compare`):
+/// a directory sorts as if its name ended with `/`, a fully-consumed
+/// non-directory name contributes `\0`, and `'\0' < '.' < '/'`.
 pub fn compare_entry_names(a: &[u8], a_dir: bool, b: &[u8], b_dir: bool) -> std::cmp::Ordering {
     let mut i = 0usize;
     loop {
         let ac = if i < a.len() {
             a[i]
-        } else if i == a.len() && a_dir {
+        } else if a_dir {
             b'/'
         } else {
-            break;
+            0
         };
         let bc = if i < b.len() {
             b[i]
-        } else if i == b.len() && b_dir {
+        } else if b_dir {
             b'/'
         } else {
-            break;
+            0
         };
+        if ac == 0 && bc == 0 {
+            return std::cmp::Ordering::Equal;
+        }
         match ac.cmp(&bc) {
-            std::cmp::Ordering::Equal => i += 1,
+            std::cmp::Ordering::Equal => {
+                if i >= a.len() && i >= b.len() {
+                    // Both fully consumed; directories compare equal here
+                    // (a directory and a file of the same name cannot coexist
+                    // in a valid tree).
+                    return std::cmp::Ordering::Equal;
+                }
+                i += 1;
+            }
             ord => return ord,
         }
     }
-    a.len().cmp(&b.len())
 }
 
 /// Serialize entries in git's canonical (sorted) order.
@@ -171,14 +182,23 @@ mod tests {
 
     #[test]
     fn git_directory_ordering() {
-        // A directory named "foo" sorts before a file named "foo.txt" but a
-        // file named "foo" sorts before the directory "foo" (as "foo/").
+        // Verified against real git: a tree sorts as
+        //   foo.txt, foo(dir), foo0, foo2
+        // because a dir sorts as "foo/" and '\0' < '.' < '/'.
         assert_eq!(
             compare_entry_names(b"foo", true, b"foo.txt", false),
+            std::cmp::Ordering::Greater
+        );
+        assert_eq!(
+            compare_entry_names(b"foo.txt", false, b"foo", true),
             std::cmp::Ordering::Less
         );
         assert_eq!(
-            compare_entry_names(b"foo", false, b"foo", true),
+            compare_entry_names(b"foo", false, b"foo0", false),
+            std::cmp::Ordering::Less
+        );
+        assert_eq!(
+            compare_entry_names(b"foo", true, b"foo0", false),
             std::cmp::Ordering::Less
         );
         assert_eq!(

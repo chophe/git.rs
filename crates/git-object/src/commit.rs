@@ -161,14 +161,14 @@ mod tests {
     fn handles_gpgsig_continuation() {
         let algo = HashAlgorithm::Sha1;
         let data = b"tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\n\
-                     author A <a@b> 0 +0000\n\
-                     committer C <c@d> 0 +0000\n\
-                     gpgsig -----BEGIN PGP SIGNATURE-----\n\
-                      \n\
-                      iQEcBAAB\n\
-                      -----END PGP SIGNATURE-----\n\
-                     \n\
-                     msg\n";
+author A <a@b> 0 +0000\n\
+committer C <c@d> 0 +0000\n\
+gpgsig -----BEGIN PGP SIGNATURE-----\n\
+\x20\x20\n\
+\x20iQEcBAAB\n\
+\x20-----END PGP SIGNATURE-----\n\
+\n\
+msg\n";
         let c = parse_commit(data, algo).unwrap();
         assert_eq!(c.message, b"msg\n");
     }

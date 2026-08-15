@@ -12,6 +12,9 @@ use std::path::{Path, PathBuf};
 use git_config::ConfigSet;
 use git_hash::HashAlgorithm;
 
+pub mod strbuf;
+pub use strbuf::StringBuf;
+
 /// Errors returned while discovering a repository.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RepoError {
@@ -23,7 +26,9 @@ pub enum RepoError {
 impl fmt::Display for RepoError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            RepoError::NotFound => write!(f, "not a git repository (or any of the parent directories)"),
+            RepoError::NotFound => {
+                write!(f, "not a git repository (or any of the parent directories)")
+            }
             RepoError::Config(e) => write!(f, "{e}"),
             RepoError::Io(e) => write!(f, "{e}"),
         }
