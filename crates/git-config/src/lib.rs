@@ -134,8 +134,11 @@ impl ConfigSet {
                 continue;
             }
             if trimmed.starts_with('[') {
-                // Section header.
-                let end = trimmed.find(']').unwrap_or(trimmed.len() - 1);
+                // Section header; skip lines without a closing bracket.
+                let end = match trimmed.find(']') {
+                    Some(e) => e,
+                    None => continue,
+                };
                 let inner = trimmed[1..end].trim();
                 let (s, sub) = split_section(inner);
                 section = s;
@@ -468,5 +471,28 @@ mod tests {
         assert!(matches!(err, ConfigError::IncludeCycle(_)));
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod props {
+    use super::ConfigSet;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// Parsing arbitrary bytes must never panic (it either parses or
+        /// returns an error).
+        #[test]
+        fn parse_never_panics(data: Vec<u8>) {
+            let _ = ConfigSet::parse(&data);
+        }
+
+        /// A generated well-formed config round-trips through the parser.
+        #[test]
+        fn round_trips_generated_config(section in "[a-z]{1,8}", key in "[a-z]{1,8}", value in "[a-z0-9]{0,16}") {
+            let text = format!("[{section}]\n\t{key} = {value}\n");
+            let cfg = ConfigSet::parse(text.as_bytes()).unwrap();
+            prop_assert_eq!(cfg.get(&section, &key), Some(value.as_str()));
+        }
     }
 }

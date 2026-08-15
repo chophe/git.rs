@@ -8,7 +8,7 @@
 use std::error::Error;
 use std::fmt;
 
-use git_hash::{CryptoDigest, HashAlgorithm};
+use git_hash::HashAlgorithm;
 
 pub const CHUNK_TOC_ENTRY_SIZE: usize = 12;
 
@@ -177,15 +177,23 @@ mod tests {
         let mut data = build(algo);
         let n = data.len();
         data[n - 5] ^= 0xff;
-        assert_eq!(ChunkFile::parse(data, 4, 2, 4, algo), Err(ChunkError::BadChecksum));
+        assert!(matches!(
+            ChunkFile::parse(data, 4, 2, 4, algo),
+            Err(ChunkError::BadChecksum)
+        ));
     }
 
     #[test]
     fn rejects_unaligned_offsets() {
         let algo = HashAlgorithm::Sha1;
         let mut data = build(algo);
-        // Corrupt an offset to be non-multiple of 4.
+        // Corrupt an offset to be non-multiple of 4, then rebuild the trailer
+        // so the checksum passes and the alignment check fires.
         data[4 + 4] = 1;
+        let trailer_off = data.len() - algo.raw_len();
+        let mut h = algo.hasher();
+        h.update(&data[..trailer_off]);
+        data[trailer_off..].copy_from_slice(&h.finalize());
         let cf = ChunkFile::parse(data, 4, 2, 4, algo);
         assert!(matches!(cf, Err(ChunkError::Corrupt(_))));
     }

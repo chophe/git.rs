@@ -300,6 +300,7 @@ impl CommitGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chunk_format::CHUNK_TOC_ENTRY_SIZE;
 
     #[test]
     fn parses_a_small_graph() {
@@ -311,7 +312,7 @@ mod tests {
         data.extend_from_slice(b"CGPH");
         data.push(1); // version
         data.push(1); // oid version (sha1)
-        data.push(4); // chunks: OIDF, OIDL, CDAT
+        data.push(3); // chunks: OIDF, OIDL, CDAT
         data.push(0); // base graphs
 
         let toc_entries = 4; // 3 chunks + trailing
@@ -374,6 +375,6 @@ mod tests {
         data.extend_from_slice(b"XXXX");
         data.extend_from_slice(&[1, 1, 0, 0]);
         data.extend_from_slice(&[0u8; 40]);
-        assert_eq!(CommitGraph::parse(data, algo), Err(GraphError::BadMagic));
+        assert!(matches!(CommitGraph::parse(data, algo), Err(GraphError::BadMagic)));
     }
 }
