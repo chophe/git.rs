@@ -6,10 +6,12 @@
 //! writer (so they are unit-testable without spawning processes) and report
 //! failures through [`CommandError`].
 
+pub mod commit_graph;
 pub mod commit_tree;
 pub mod count_objects;
 pub mod hash_object;
 pub mod ident;
+pub mod multi_pack_index;
 pub mod pack_objects;
 pub mod unpack_objects;
 pub mod verify_pack;
@@ -19,7 +21,8 @@ use std::fmt;
 use std::io::Write;
 
 use git_core::RepoError;
-use git_odb::pack::PackError;
+use git_commitgraph::GraphError;
+use git_odb::pack::{MidxError, PackError};
 use git_odb::OdbError;
 
 /// An error returned by a command.
@@ -73,6 +76,18 @@ impl From<PackError> for CommandError {
     }
 }
 
+impl From<MidxError> for CommandError {
+    fn from(e: MidxError) -> CommandError {
+        CommandError::fatal(e.to_string())
+    }
+}
+
+impl From<GraphError> for CommandError {
+    fn from(e: GraphError) -> CommandError {
+        CommandError::fatal(e.to_string())
+    }
+}
+
 /// A git subcommand.
 pub trait Command {
     /// The subcommand name used on the command line.
@@ -96,6 +111,8 @@ pub fn dispatch(name: &str, args: &[String], out: &mut dyn Write) -> Option<Resu
         "unpack-objects" => &unpack_objects::UnpackObjects,
         "pack-objects" => &pack_objects::PackObjects,
         "count-objects" => &count_objects::CountObjects,
+        "multi-pack-index" => &multi_pack_index::MultiPackIndex,
+        "commit-graph" => &commit_graph::CommitGraphCmd,
         _ => return None,
     };
     Some(cmd.run(args, out))
