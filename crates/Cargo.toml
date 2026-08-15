@@ -9,7 +9,9 @@ members = [
     "git-cli",
     "git-command",
     "git-object",
+    "git-commitgraph",
     "git-odb",
+    "xtask",
 ]
 
 [workspace.package]
