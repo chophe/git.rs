@@ -451,3 +451,47 @@ mod tests {
         assert!(HashAlgorithm::Sha256.hasher().is_safe());
     }
 }
+
+#[cfg(test)]
+mod props {
+    use super::{sha1::Sha1, sha256::Sha256, CryptoDigest, HashAlgorithm};
+    use proptest::prelude::*;
+
+    proptest! {
+        /// Incremental updates must produce the same digest as a single shot,
+        /// for both algorithms, over arbitrary byte splits.
+        #[test]
+        fn incremental_equals_oneshot(data: Vec<u8>, split: usize) {
+            let split = split % 17 + 1;
+
+            let mut one = Sha1::new();
+            one.update(&data);
+            let mut inc = Sha1::new();
+            for c in data.chunks(split) {
+                inc.update(c);
+            }
+            prop_assert_eq!(inc.finalize(), one.finalize());
+
+            let mut one = Sha256::new();
+            one.update(&data);
+            let mut inc = Sha256::new();
+            for c in data.chunks(split) {
+                inc.update(c);
+            }
+            prop_assert_eq!(inc.finalize(), one.finalize());
+        }
+
+        /// Hashing the serialized form of a blob must yield an oid of the
+        /// correct length.
+        #[test]
+        fn blob_oid_length(data: Vec<u8>) {
+            let mut h = HashAlgorithm::Sha1.hasher();
+            h.update(b"blob ");
+            h.update(data.len().to_string().as_bytes());
+            h.update(&[0]);
+            h.update(&data);
+            let oid = h.into_oid();
+            prop_assert_eq!(oid.as_slice().len(), 20);
+        }
+    }
+}
