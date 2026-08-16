@@ -123,6 +123,7 @@ dependencies = [
  "git-hash",
  "git-object",
  "git-odb",
+ "git-revision",
 ]
 
 [[package]]
@@ -176,6 +177,14 @@ dependencies = [
  "git-hash",
  "git-object",
  "proptest",
+]
+
+[[package]]
+name = "git-revision"
+version = "0.1.0"
+dependencies = [
+ "git-hash",
+ "git-object",
 ]
 
 [[package]]

@@ -6,13 +6,18 @@
 //! writer (so they are unit-testable without spawning processes) and report
 //! failures through [`CommandError`].
 
+pub mod cat_file;
 pub mod commit_graph;
 pub mod commit_tree;
 pub mod count_objects;
 pub mod hash_object;
 pub mod ident;
+pub mod log;
+pub mod ls_tree;
+pub mod mktree;
 pub mod multi_pack_index;
 pub mod pack_objects;
+pub mod rev_list;
 pub mod unpack_objects;
 pub mod verify_pack;
 
@@ -113,6 +118,11 @@ pub fn dispatch(name: &str, args: &[String], out: &mut dyn Write) -> Option<Resu
         "count-objects" => &count_objects::CountObjects,
         "multi-pack-index" => &multi_pack_index::MultiPackIndex,
         "commit-graph" => &commit_graph::CommitGraphCmd,
+        "cat-file" => &cat_file::CatFile,
+        "ls-tree" => &ls_tree::LsTree,
+        "mktree" => &mktree::MkTree,
+        "rev-list" => &rev_list::RevList,
+        "log" => &log::Log,
         _ => return None,
     };
     Some(cmd.run(args, out))
