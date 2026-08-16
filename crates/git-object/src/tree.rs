@@ -159,15 +159,6 @@ pub fn serialize_tree(entries: &[TreeEntry], algo: HashAlgorithm) -> Result<Vec<
 mod tests {
     use super::*;
 
-    fn entry(mode: &str, name: &str, algo: HashAlgorithm) -> TreeEntry {
-        let oid = *algo.empty_blob();
-        TreeEntry {
-            mode: mode.to_string(),
-            name: name.as_bytes().to_vec(),
-            oid,
-        }
-    }
-
     #[test]
     fn parses_and_serializes_round_trip() {
         let algo = HashAlgorithm::Sha1;
