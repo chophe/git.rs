@@ -136,8 +136,8 @@ pub fn compare_entry_names(a: &[u8], a_dir: bool, b: &[u8], b_dir: bool) -> std:
 
 /// Serialize entries in git's canonical (sorted) order.
 ///
-/// The caller is responsible for passing complete entries; the tree is built
-/// by sorting with [`compare_entry_names`] and writing each entry.
+/// Modes are canonicalized to their octal representation without leading
+/// zeros (so a display mode of `040000` is stored as `40000`, matching git).
 pub fn serialize_tree(entries: &[TreeEntry], algo: HashAlgorithm) -> Result<Vec<u8>, TreeError> {
     let raw = algo.raw_len();
     let mut sorted: Vec<&TreeEntry> = entries.iter().collect();
@@ -145,7 +145,8 @@ pub fn serialize_tree(entries: &[TreeEntry], algo: HashAlgorithm) -> Result<Vec<
 
     let mut out = Vec::new();
     for e in &sorted {
-        out.extend_from_slice(e.mode.as_bytes());
+        let mode = canonical_mode(&e.mode)?;
+        out.extend_from_slice(mode.as_bytes());
         out.push(b' ');
         out.extend_from_slice(&e.name);
         out.push(0);
@@ -153,6 +154,15 @@ pub fn serialize_tree(entries: &[TreeEntry], algo: HashAlgorithm) -> Result<Vec<
         let _ = raw;
     }
     Ok(out)
+}
+
+/// Parse an octal mode string and re-render it without leading zeros.
+fn canonical_mode(mode: &str) -> Result<String, TreeError> {
+    if mode.is_empty() || !mode.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(TreeError::BadMode);
+    }
+    let v = u32::from_str_radix(mode, 8).map_err(|_| TreeError::BadMode)?;
+    Ok(format!("{v:o}"))
 }
 
 #[cfg(test)]
