@@ -41,7 +41,9 @@ where
             match git_command::dispatch(cmd, &args, &mut std::io::stdout()) {
                 Some(Ok(())) => 0,
                 Some(Err(e)) => {
-                    eprintln!("{}", e.message);
+                    if !e.message.is_empty() {
+                        eprintln!("{}", e.message);
+                    }
                     e.code
                 }
                 None => {
