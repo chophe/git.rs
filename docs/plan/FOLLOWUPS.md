@@ -149,6 +149,18 @@ All defined in `docs/plan/test-infrastructure.md`; none implemented yet:
   - `status` long format, `--branch`, `--short`, `-z`, renames, `--ignored`,
     `.gitignore`.
 
+- **Phase 7 (partially done)** — refs. Summary: `docs/plan/phase-7-summary.md`.
+  Implemented: `git-refs` (files backend, packed-refs read) and commands
+  `rev-parse`, `show-ref`, `for-each-ref`, `update-ref`, `symbolic-ref`,
+  `branch`, `tag -l`; ref names now accepted by `rev-list`/`log` (via
+  `resolve_arg`). Cross-verified. Remaining Phase 7:
+  - Reflog (`logs/<ref>`), reftable backend, packed-refs writing.
+  - Ref transactions / locking (multi-ref atomicity, `lock-ref`).
+  - Symref writes; worktree-specific refs.
+  - `rev-parse` options (`--abbrev-ref`, `--short`, `@{...}`, ranges `A..B`).
+  - `for-each-ref` extra format specifiers, sorting, filtering.
+  - `update-ref --stdin`, `--no-deref`, reflog options.
+
 ## E. Next phases
 
 - **Phase 3 — MIDX, bitmaps, commit-graph, cruft** — `docs/plan/phase-3-*.md`
