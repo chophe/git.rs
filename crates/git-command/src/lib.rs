@@ -10,6 +10,8 @@ pub mod cat_file;
 pub mod commit_graph;
 pub mod commit_tree;
 pub mod count_objects;
+pub mod diff;
+pub mod diff_tree;
 pub mod hash_object;
 pub mod ident;
 pub mod log;
@@ -17,6 +19,7 @@ pub mod ls_tree;
 pub mod mktree;
 pub mod multi_pack_index;
 pub mod pack_objects;
+pub mod patch;
 pub mod rev_list;
 pub mod unpack_objects;
 pub mod verify_pack;
@@ -52,6 +55,12 @@ impl CommandError {
     /// A general error (git exits 1).
     pub fn error(message: impl Into<String>) -> CommandError {
         CommandError { message: message.into(), code: 1 }
+    }
+
+    /// An exit code with no message (e.g. `git diff` returning 1 when files
+    /// differ).
+    pub fn silent(code: i32) -> CommandError {
+        CommandError { message: String::new(), code }
     }
 }
 
@@ -123,6 +132,8 @@ pub fn dispatch(name: &str, args: &[String], out: &mut dyn Write) -> Option<Resu
         "mktree" => &mktree::MkTree,
         "rev-list" => &rev_list::RevList,
         "log" => &log::Log,
+        "diff-tree" => &diff_tree::DiffTree,
+        "diff" => &diff::Diff,
         _ => return None,
     };
     Some(cmd.run(args, out))
