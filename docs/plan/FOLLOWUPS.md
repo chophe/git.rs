@@ -138,6 +138,17 @@ All defined in `docs/plan/test-infrastructure.md`; none implemented yet:
     Phase 6); binary files; no-newline-at-EOF markers.
   - `diff-tree --exit-code` (always exits 0 currently).
 
+- **Phase 6 (partially done)** — index & status. Summary:
+  `docs/plan/phase-6-summary.md`. Implemented: `git-index` (v2 read/write) and
+  commands `ls-files`, `update-index --add|--remove`, `status --porcelain`.
+  Cross-verified both index directions + status. Remaining Phase 6:
+  - Cache-tree (`TREE` ext), split index, sparse index; index versions 3/4.
+  - checkout / checkout-index / reset; `diff-files` / `diff-index`.
+  - Racy-clean / stat-dirty handling (status content-compares today).
+  - `update-index --cacheinfo/--refresh/--assume-unchanged/--skip-worktree/-z`.
+  - `status` long format, `--branch`, `--short`, `-z`, renames, `--ignored`,
+    `.gitignore`.
+
 ## E. Next phases
 
 - **Phase 3 — MIDX, bitmaps, commit-graph, cruft** — `docs/plan/phase-3-*.md`
