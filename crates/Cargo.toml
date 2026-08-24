@@ -13,6 +13,7 @@ members = [
     "git-odb",
     "git-revision",
     "git-diff",
+    "git-index",
     "xtask",
 ]
 
