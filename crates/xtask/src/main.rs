@@ -71,6 +71,14 @@ fn suites() -> &'static [(&'static str, &'static [&'static str])] {
             "graph-midx-crosswise",
             &["test", "-p", "git-odb", "--test", "graph_midx_crosswise"],
         ),
+        (
+            "phase4-crosswise",
+            &["test", "-p", "git-command", "--test", "phase4_crosswise"],
+        ),
+        (
+            "phase5-crosswise",
+            &["test", "-p", "git-command", "--test", "phase5_crosswise"],
+        ),
     ]
 }
 
