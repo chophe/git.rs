@@ -1,0 +1,155 @@
+//! Unified-diff rendering, matching git's output for files without a
+//! userdiff function-context driver (e.g. plain text).
+
+use super::myers::{split_lines, Op};
+
+/// Number of context lines around each change (git's default).
+pub const CONTEXT: usize = 3;
+
+/// Render `b` as a unified diff against `a`, given the edit script.
+pub fn render_unified(a: &[&[u8]], b: &[&[u8]], ops: &[Op]) -> Vec<u8> {
+    // Find runs of change ops.
+    let mut extents: Vec<(usize, usize)> = Vec::new();
+    let mut k = 0usize;
+    while k < ops.len() {
+        if ops[k] != Op::Keep {
+            let s = k;
+            while k < ops.len() && ops[k] != Op::Keep {
+                k += 1;
+            }
+            extents.push((s, k));
+        } else {
+            k += 1;
+        }
+    }
+
+    // Merge extents separated by a gap of at most 2*CONTEXT kept lines.
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+    for (s, e) in extents {
+        if let Some(last) = merged.last_mut() {
+            if s - last.1 <= 2 * CONTEXT {
+                last.1 = e;
+                continue;
+            }
+        }
+        merged.push((s, e));
+    }
+
+    let mut out = Vec::new();
+    for (s, e) in merged {
+        let lo = s.saturating_sub(CONTEXT);
+        let hi = (e + CONTEXT).min(ops.len());
+
+        // Line positions at the start of the hunk.
+        let (mut old_pos, mut new_pos) = (0usize, 0usize);
+        for &op in &ops[..lo] {
+            match op {
+                Op::Keep => {
+                    old_pos += 1;
+                    new_pos += 1;
+                }
+                Op::Delete => old_pos += 1,
+                Op::Insert => new_pos += 1,
+            }
+        }
+        // Counts within the hunk.
+        let (mut old_count, mut new_count) = (0usize, 0usize);
+        for &op in &ops[lo..hi] {
+            match op {
+                Op::Keep => {
+                    old_count += 1;
+                    new_count += 1;
+                }
+                Op::Delete => old_count += 1,
+                Op::Insert => new_count += 1,
+            }
+        }
+
+        // Hunk header: `@@ -a,b +c,d @@`, omitting the count when it is 1 and
+        // using a start of 0 when the side is empty.
+        let old_start = if old_count == 0 { 0 } else { old_pos + 1 };
+        let new_start = if new_count == 0 { 0 } else { new_pos + 1 };
+        let mut hdr = String::new();
+        let _ = write!(hdr, "@@ -{old_start}");
+        if old_count != 1 {
+            let _ = write!(hdr, ",{old_count}");
+        }
+        let _ = write!(hdr, " +{new_start}");
+        if new_count != 1 {
+            let _ = write!(hdr, ",{new_count}");
+        }
+        hdr.push_str(" @@\n");
+        out.extend_from_slice(hdr.as_bytes());
+
+        let (mut i, mut j) = (old_pos, new_pos);
+        for &op in &ops[lo..hi] {
+            match op {
+                Op::Keep => {
+                    out.push(b' ');
+                    out.extend_from_slice(a[i]);
+                    i += 1;
+                    j += 1;
+                }
+                Op::Delete => {
+                    out.push(b'-');
+                    out.extend_from_slice(a[i]);
+                    i += 1;
+                }
+                Op::Insert => {
+                    out.push(b'+');
+                    out.extend_from_slice(b[j]);
+                    j += 1;
+                }
+            }
+            // Ensure a trailing newline even for unterminated lines.
+            if !out.ends_with(b"\n") {
+                out.push(b'\n');
+            }
+        }
+    }
+    out
+}
+
+/// Produce a unified diff of two blobs.
+pub fn diff_blobs(old: &[u8], new: &[u8]) -> Vec<u8> {
+    let a = split_lines(old);
+    let b = split_lines(new);
+    let ops = super::myers::diff(&a, &b);
+    render_unified(&a, &b, &ops)
+}
+
+use std::fmt::Write;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn renders_simple_insertions() {
+        let old = b"a\nb\nc\nd\ne\nf\ng\nh\n";
+        let new = b"a\nb\nX\nc\nd\ne\nf\ng\nh\nY\n";
+        let a = split_lines(old);
+        let b = split_lines(new);
+        let ops = super::super::myers::diff(&a, &b);
+        let out = render_unified(&a, &b, &ops);
+        let text = String::from_utf8(out).unwrap();
+        // First hunk header.
+        assert!(text.contains("@@ -1,8 +1,10 @@\n"), "got:\n{text}");
+        assert!(text.contains("\n+X\n"), "got:\n{text}");
+        assert!(text.contains("\n+Y\n"), "got:\n{text}");
+    }
+
+    #[test]
+    fn empty_to_nonempty() {
+        let out = diff_blobs(b"", b"a\nb\n");
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("@@ -0,0 +1,2 @@\n"), "got:\n{text}");
+    }
+
+    #[test]
+    fn nonempty_to_empty() {
+        let out = diff_blobs(b"a\nb\n", b"");
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("@@ -1,2 +0,0 @@\n"), "got:\n{text}");
+    }
+}
