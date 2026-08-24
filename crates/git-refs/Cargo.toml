@@ -1,0 +1,11 @@
+[package]
+name = "git-refs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Reference storage (files backend, packed-refs)"
+
+[dependencies]
+git-hash = { path = "../git-hash" }
+git-core = { path = "../git-core" }
