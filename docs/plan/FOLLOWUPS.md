@@ -113,6 +113,31 @@ All defined in `docs/plan/test-infrastructure.md`; none implemented yet:
     `BASE` — not read/written.
   - MIDX `--preferred-pack` selection — not implemented (first sorted pack wins).
 
+- **Phase 4 (partially done)** — object model + basic revision walking.
+  Summary: `docs/plan/phase-4-summary.md`. Implemented: `git-object` tree/
+  commit/tag parsing, `git-revision` RevWalk, and commands `cat-file`,
+  `ls-tree`, `mktree`, `rev-list`, `log`. Cross-verified. Remaining Phase 4:
+  - `HEAD`/ref resolution for command args (needs refs, Phase 7).
+  - Pretty-printing (`pretty.c`), `--format`, trailers, mailmap.
+  - Revision ordering for merges (`--topo-order`/`--date-order`), path
+    limiting, `--first-parent`, grafts/replace, `--all`, `rev-list --objects`
+    / `--count` / `-n`.
+  - `log` default `Date:` line (author-date parsing).
+  - Commit-graph-driven walks + bloom query.
+
+- **Phase 5 (partially done)** — diff. Summary: `docs/plan/phase-5-summary.md`.
+  Implemented: `git-diff` (Myers, unified renderer, tree comparison) and
+  commands `diff-tree`, `diff`, `diff --no-index`. Cross-verified byte-identical.
+  Remaining Phase 5:
+  - Rename/copy detection (`diffcore-rename`), pickaxe, break/order/rotate.
+  - Output formats: `--stat`, `--numstat`, `--summary`, `--word-diff`, color,
+    `--diff-filter`.
+  - Function-context hunk headers (userdiff drivers) — unified output matches
+    git only for text without them.
+  - `git apply`/`am` (Phase 10); working-tree diff (`diff-files`/`diff-index`,
+    Phase 6); binary files; no-newline-at-EOF markers.
+  - `diff-tree --exit-code` (always exits 0 currently).
+
 ## E. Next phases
 
 - **Phase 3 — MIDX, bitmaps, commit-graph, cruft** — `docs/plan/phase-3-*.md`
