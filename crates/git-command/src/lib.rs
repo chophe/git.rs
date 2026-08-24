@@ -22,9 +22,12 @@ pub mod multi_pack_index;
 pub mod pack_objects;
 pub mod patch;
 pub mod rev_list;
+pub mod rev_parse;
+pub mod show_ref;
 pub mod status;
 pub mod unpack_objects;
 pub mod update_index;
+pub mod update_ref;
 pub mod verify_pack;
 
 use std::error::Error;
@@ -140,6 +143,13 @@ pub fn dispatch(name: &str, args: &[String], out: &mut dyn Write) -> Option<Resu
         "ls-files" => &ls_files::LsFiles,
         "update-index" => &update_index::UpdateIndex,
         "status" => &status::Status,
+        "rev-parse" => &rev_parse::RevParse,
+        "show-ref" => &show_ref::ShowRef,
+        "for-each-ref" => &show_ref::ForEachRef,
+        "update-ref" => &update_ref::UpdateRef,
+        "symbolic-ref" => &update_ref::SymbolicRef,
+        "branch" => &show_ref::Branch,
+        "tag" => &show_ref::Tag,
         _ => return None,
     };
     Some(cmd.run(args, out))
