@@ -125,6 +125,7 @@ dependencies = [
  "git-index",
  "git-object",
  "git-odb",
+ "git-refs",
  "git-revision",
 ]
 
@@ -194,6 +195,14 @@ dependencies = [
  "git-hash",
  "git-object",
  "proptest",
+]
+
+[[package]]
+name = "git-refs"
+version = "0.1.0"
+dependencies = [
+ "git-core",
+ "git-hash",
 ]
 
 [[package]]
