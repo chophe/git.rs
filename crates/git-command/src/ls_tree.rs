@@ -63,17 +63,21 @@ fn print_entries(
         } else {
             format!("{prefix}{}", String::from_utf8_lossy(&e.name))
         };
-        if name_only {
-            writeln!(out, "{path}").map_err(|e| CommandError::fatal(e.to_string()))?;
-        } else {
-            writeln!(
-                out,
-                "{:06} {} {}\t{path}",
-                e.mode,
-                e.type_name(),
-                e.oid
-            )
-            .map_err(|e| CommandError::fatal(e.to_string()))?;
+        // With -r (and without -t) directory lines are omitted.
+        let omit_dir = e.is_dir() && recursive && !include_trees;
+        if !omit_dir {
+            if name_only {
+                writeln!(out, "{path}").map_err(|e| CommandError::fatal(e.to_string()))?;
+            } else {
+                writeln!(
+                    out,
+                    "{:0>6} {} {}\t{path}",
+                    e.mode,
+                    e.type_name(),
+                    e.oid
+                )
+                .map_err(|e| CommandError::fatal(e.to_string()))?;
+            }
         }
         if recursive && e.is_dir() {
             if let Ok(sub) = odb.read(&e.oid) {
@@ -91,7 +95,6 @@ fn print_entries(
                 }
             }
         }
-        let _ = include_trees;
     }
     Ok(())
 }
