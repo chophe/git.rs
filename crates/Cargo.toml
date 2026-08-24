@@ -15,6 +15,7 @@ members = [
     "git-diff",
     "git-index",
     "git-refs",
+    "git-merge",
     "xtask",
 ]
 

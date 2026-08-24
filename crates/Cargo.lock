@@ -123,6 +123,7 @@ dependencies = [
  "git-diff",
  "git-hash",
  "git-index",
+ "git-merge",
  "git-object",
  "git-odb",
  "git-refs",
@@ -175,6 +176,15 @@ name = "git-index"
 version = "0.1.0"
 dependencies = [
  "git-hash",
+]
+
+[[package]]
+name = "git-merge"
+version = "0.1.0"
+dependencies = [
+ "git-diff",
+ "git-hash",
+ "git-object",
 ]
 
 [[package]]
