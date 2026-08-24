@@ -4,7 +4,6 @@ use std::io::Write;
 
 use crate::{Command, CommandError};
 use git_core::Repository;
-use git_object::ObjectKind;
 use git_odb::Odb;
 use git_refs::RefStore;
 
@@ -39,7 +38,7 @@ impl Command for ForEachRef {
 
     fn run(&self, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
         let mut pattern: Option<String> = None;
-        let mut format = "%(objectname) %(objecttype) %(refname)".to_string();
+        let mut format = "%(objectname) %(objecttype)\t%(refname)".to_string();
         for a in args {
             if let Some(f) = a.strip_prefix("--format=") {
                 format = f.to_string();
@@ -94,10 +93,14 @@ pub fn list_short(
             continue;
         }
         let short = name[prefix.len()..].to_string();
-        if mark_head && Some(&name) == head_target.as_ref() {
-            writeln!(out, "* {short}").map_err(|e| CommandError::fatal(e.to_string()))?;
+        if mark_head {
+            if Some(&name) == head_target.as_ref() {
+                writeln!(out, "* {short}").map_err(|e| CommandError::fatal(e.to_string()))?;
+            } else {
+                writeln!(out, "  {short}").map_err(|e| CommandError::fatal(e.to_string()))?;
+            }
         } else {
-            writeln!(out, "  {short}").map_err(|e| CommandError::fatal(e.to_string()))?;
+            writeln!(out, "{short}").map_err(|e| CommandError::fatal(e.to_string()))?;
         }
     }
     Ok(())
