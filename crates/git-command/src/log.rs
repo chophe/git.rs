@@ -33,8 +33,7 @@ impl Command for Log {
         let repo = Repository::discover()?;
         let odb = Odb::from_repo(&repo).map_err(CommandError::from)?;
         let algo = repo.hash_algo;
-        let tip_oid = Oid::from_hex(&tip, algo)
-            .map_err(|_| CommandError::error(format!("Not a valid object name '{tip}'")))?;
+        let tip_oid = crate::resolve_arg(&repo, &tip)?;
 
         let mut loader = |oid: &Oid| -> Option<git_object::Commit> {
             let obj = odb.read(oid).ok()?;
