@@ -319,4 +319,22 @@ impl Repository {
     pub fn get_bool(&self, section: &str, key: &str) -> Option<bool> {
         self.config.get_bool(section, key)
     }
+
+    /// The path of the index file.
+    pub fn index_file(&self) -> PathBuf {
+        self.git_dir.join("index")
+    }
+
+    /// Resolve `HEAD` to a commit id by reading the ref file (loose refs only).
+    pub fn resolve_head(&self) -> Option<git_hash::Oid> {
+        let head = self.git_dir.join("HEAD");
+        let content = std::fs::read_to_string(&head).ok()?;
+        if let Some(refpath) = content.strip_prefix("ref: ") {
+            let refpath = refpath.trim();
+            let f = self.common_dir.join(refpath);
+            let s = std::fs::read_to_string(&f).ok()?;
+            return git_hash::Oid::from_hex(s.trim(), self.hash_algo).ok();
+        }
+        git_hash::Oid::from_hex(content.trim(), self.hash_algo).ok()
+    }
 }
