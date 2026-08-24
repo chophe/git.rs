@@ -99,7 +99,7 @@ pub fn pretty_print(obj: &Object, out: &mut dyn Write, algo: git_hash::HashAlgor
             for e in &entries {
                 writeln!(
                     out,
-                    "{:06} {} {}\t{}",
+                    "{:0>6} {} {}\t{}",
                     e.mode,
                     e.type_name(),
                     e.oid,
