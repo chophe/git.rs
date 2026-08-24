@@ -15,6 +15,8 @@ pub mod diff_tree;
 pub mod hash_object;
 pub mod ident;
 pub mod log;
+pub mod merge_base;
+pub mod merge_file;
 pub mod ls_files;
 pub mod ls_tree;
 pub mod mktree;
@@ -170,6 +172,8 @@ pub fn dispatch(name: &str, args: &[String], out: &mut dyn Write) -> Option<Resu
         "update-ref" => &update_ref::UpdateRef,
         "symbolic-ref" => &update_ref::SymbolicRef,
         "branch" => &show_ref::Branch,
+        "merge-base" => &merge_base::MergeBase,
+        "merge-file" => &merge_file::MergeFile,
         "tag" => &show_ref::Tag,
         _ => return None,
     };
