@@ -161,6 +161,18 @@ All defined in `docs/plan/test-infrastructure.md`; none implemented yet:
   - `for-each-ref` extra format specifiers, sorting, filtering.
   - `update-ref --stdin`, `--no-deref`, reflog options.
 
+- **Phase 8 (partially done)** — merge & reachability. Summary:
+  `docs/plan/phase-8-summary.md`. Implemented: `git-merge` (merge-bases,
+  3-way line merge) and commands `merge-base`, `merge-file`. Cross-verified.
+  Remaining Phase 8:
+  - `git merge` (merge-ort): rename detection, dir/file conflicts, recursive
+    criss-cross bases, index merging.
+  - `merge-tree`, `cherry-pick`/`revert`, `merge-base --octopus` /
+    `--independent` / `--is-ancestor`.
+  - Conflict clustering (adjacent changes as conflicts, matching xdl_merge).
+  - `merge-file --diff3`, `-L` labels, `--marker-size`; binary/mode/symlink
+    merges.
+
 ## E. Next phases
 
 - **Phase 3 — MIDX, bitmaps, commit-graph, cruft** — `docs/plan/phase-3-*.md`
