@@ -39,9 +39,7 @@ impl Command for RevList {
 
         let mut tip_oids = Vec::with_capacity(tips.len());
         for t in &tips {
-            let oid = Oid::from_hex(t, algo)
-                .map_err(|_| CommandError::error(format!("Not a valid object name '{t}'")))?;
-            tip_oids.push(oid);
+            tip_oids.push(crate::resolve_arg(&repo, t)?);
         }
 
         let mut loader = |oid: &Oid| -> Option<git_object::Commit> {
