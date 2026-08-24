@@ -15,6 +15,7 @@ git-date = { path = "../git-date" }
 git-commitgraph = { path = "../git-commitgraph" }
 git-revision = { path = "../git-revision" }
 git-diff = { path = "../git-diff" }
+git-index = { path = "../git-index" }
 
 [dev-dependencies]
 git-config = { path = "../git-config" }
