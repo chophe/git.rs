@@ -15,13 +15,16 @@ pub mod diff_tree;
 pub mod hash_object;
 pub mod ident;
 pub mod log;
+pub mod ls_files;
 pub mod ls_tree;
 pub mod mktree;
 pub mod multi_pack_index;
 pub mod pack_objects;
 pub mod patch;
 pub mod rev_list;
+pub mod status;
 pub mod unpack_objects;
+pub mod update_index;
 pub mod verify_pack;
 
 use std::error::Error;
@@ -134,6 +137,9 @@ pub fn dispatch(name: &str, args: &[String], out: &mut dyn Write) -> Option<Resu
         "log" => &log::Log,
         "diff-tree" => &diff_tree::DiffTree,
         "diff" => &diff::Diff,
+        "ls-files" => &ls_files::LsFiles,
+        "update-index" => &update_index::UpdateIndex,
+        "status" => &status::Status,
         _ => return None,
     };
     Some(cmd.run(args, out))
