@@ -1,0 +1,12 @@
+[package]
+name = "git-merge"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Merge bases and 3-way line merging"
+
+[dependencies]
+git-hash = { path = "../git-hash" }
+git-object = { path = "../git-object" }
+git-diff = { path = "../git-diff" }
