@@ -12,7 +12,7 @@ pub mod commit;
 pub mod tree;
 
 pub use commit::{parse_commit, parse_tag, Commit, Tag};
-pub use tree::{parse_tree, serialize_tree, TreeEntry, TreeError};
+pub use tree::{compare_entry_names, parse_tree, serialize_tree, TreeEntry, TreeError};
 
 /// The kinds of objects git can store.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
