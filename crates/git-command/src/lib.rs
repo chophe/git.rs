@@ -34,7 +34,7 @@ use std::error::Error;
 use std::fmt;
 use std::io::Write;
 
-use git_core::RepoError;
+use git_core::{RepoError, Repository};
 use git_commitgraph::GraphError;
 use git_odb::pack::{MidxError, PackError};
 use git_odb::OdbError;
@@ -118,6 +118,27 @@ pub trait Command {
     /// `args` are the arguments following the subcommand name. Primary output
     /// is written to `out`.
     fn run(&self, args: &[String], out: &mut dyn Write) -> Result<(), CommandError>;
+}
+
+/// Resolve a revision argument: a full hex oid, or a ref name (e.g. `HEAD`,
+/// `refs/heads/main`, `main`).
+pub fn resolve_arg(repo: &Repository, s: &str) -> Result<git_hash::Oid, CommandError> {
+    if let Ok(oid) = git_hash::Oid::from_hex(s, repo.hash_algo) {
+        return Ok(oid);
+    }
+    // `main` may abbreviate `refs/heads/main`.
+    let candidates = [
+        s.to_string(),
+        format!("refs/heads/{s}"),
+        format!("refs/tags/{s}"),
+    ];
+    let store = git_refs::RefStore::from_repo(repo);
+    for c in &candidates {
+        if let Some(oid) = store.resolve(c) {
+            return Ok(oid);
+        }
+    }
+    Err(CommandError::error(format!("Not a valid object name '{s}'")))
 }
 
 /// Route a subcommand name to its implementation.
