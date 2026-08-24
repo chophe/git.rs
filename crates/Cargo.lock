@@ -120,6 +120,7 @@ dependencies = [
  "git-config",
  "git-core",
  "git-date",
+ "git-diff",
  "git-hash",
  "git-object",
  "git-odb",
@@ -151,6 +152,14 @@ dependencies = [
 [[package]]
 name = "git-date"
 version = "0.1.0"
+
+[[package]]
+name = "git-diff"
+version = "0.1.0"
+dependencies = [
+ "git-hash",
+ "git-object",
+]
 
 [[package]]
 name = "git-hash"

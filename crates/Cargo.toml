@@ -12,6 +12,7 @@ members = [
     "git-commitgraph",
     "git-odb",
     "git-revision",
+    "git-diff",
     "xtask",
 ]
 
