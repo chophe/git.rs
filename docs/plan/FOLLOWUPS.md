@@ -173,6 +173,17 @@ All defined in `docs/plan/test-infrastructure.md`; none implemented yet:
   - `merge-file --diff3`, `-L` labels, `--marker-size`; binary/mode/symlink
     merges.
 
+- **Phase 9 (partially done)** — fsck. Summary: `docs/plan/phase-9-summary.md`.
+  Implemented: `git fsck` (reachability walk, missing/corrupt reporting,
+  dangling scan, exit-code parity) + `LooseStore::iter_oids`. Cross-verified.
+  Remaining Phase 9:
+  - sha1↔sha256 object conversion (`compatObjectFormat`), signed-content
+    (`gpgsig`↔`gpgsig-sha256`) rewriting, and the **LMAP** loose-object map
+    (gate: `t1016-compatObjectFormat`).
+  - `fsck` options (`--strict`, `--connectivity-only`, `--no-dangling`,
+    `--full`, `--lost-found`); fsck message-catalog parity.
+  - `repack`/`gc`, `hash-object --literally`, `index-pack --stdin`.
+
 ## E. Next phases
 
 - **Phase 3 — MIDX, bitmaps, commit-graph, cruft** — `docs/plan/phase-3-*.md`
