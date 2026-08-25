@@ -12,6 +12,7 @@ pub mod commit_tree;
 pub mod count_objects;
 pub mod diff;
 pub mod diff_tree;
+pub mod fsck;
 pub mod hash_object;
 pub mod ident;
 pub mod log;
@@ -174,6 +175,7 @@ pub fn dispatch(name: &str, args: &[String], out: &mut dyn Write) -> Option<Resu
         "branch" => &show_ref::Branch,
         "merge-base" => &merge_base::MergeBase,
         "merge-file" => &merge_file::MergeFile,
+        "fsck" => &fsck::Fsck,
         "tag" => &show_ref::Tag,
         _ => return None,
     };
