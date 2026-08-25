@@ -88,20 +88,34 @@ impl LooseStore {
 
     /// The number of loose objects present on disk.
     pub fn object_count(&self) -> usize {
-        let mut count = 0usize;
+        self.iter_oids().len()
+    }
+
+    /// The object ids of all loose objects on disk.
+    pub fn iter_oids(&self) -> Vec<Oid> {
+        let mut out = Vec::new();
         if let Ok(rd) = std::fs::read_dir(&self.objects_dir) {
             for e in rd.flatten() {
-                let name = e.file_name();
-                let name = name.to_string_lossy();
-                let is_fanout = name.len() == 2 && name.bytes().all(|b| b.is_ascii_hexdigit());
-                if e.path().is_dir() && is_fanout {
+                let dname = e.file_name().to_string_lossy().into_owned();
+                if e.path().is_dir()
+                    && dname.len() == 2
+                    && dname.bytes().all(|b| b.is_ascii_hexdigit())
+                {
                     if let Ok(sub) = std::fs::read_dir(e.path()) {
-                        count += sub.flatten().filter(|x| x.path().is_file()).count();
+                        for f in sub.flatten() {
+                            let fname = f.file_name().to_string_lossy().into_owned();
+                            let want = self.algo.hex_len() - 2;
+                            if f.path().is_file() && fname.len() == want {
+                                if let Ok(oid) = Oid::from_hex(&format!("{dname}{fname}"), self.algo) {
+                                    out.push(oid);
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
-        count
+        out
     }
 
     /// Whether an object exists as a loose object.
