@@ -207,6 +207,51 @@ impl ConfigSet {
     pub fn entries(&self) -> &[ConfigEntry] {
         &self.entries
     }
+
+    /// Set a `section.key` value, appending (so it wins on lookup).
+    pub fn set(&mut self, section: &str, key: &str, value: &str) {
+        self.set_in(section, None, key, value);
+    }
+
+    /// Set a `section.subsection.key` value, appending (so it wins on lookup).
+    pub fn set_in(
+        &mut self,
+        section: &str,
+        subsection: Option<&str>,
+        key: &str,
+        value: &str,
+    ) {
+        self.entries.push(ConfigEntry {
+            section: section.to_string(),
+            subsection: subsection.map(|s| s.to_string()),
+            key: key.to_string(),
+            value: value.to_string(),
+            origin: None,
+        });
+    }
+
+    /// Apply a `git -c name=value` command-line override.
+    ///
+    /// `name` may contain a subsection: `remote.origin.url`. A missing `=`
+    /// means a boolean `true` (matching C git).
+    pub fn set_cli(&mut self, name: &str, value: Option<&str>) {
+        let value = value.unwrap_or("true");
+        // The first dot separates section from the rest; the last dot in the
+        // remainder separates subsection from key.
+        let Some(first_dot) = name.find('.') else {
+            return;
+        };
+        let section = name[..first_dot].to_lowercase();
+        let rest = &name[first_dot + 1..];
+        let (subsection, key) = match rest.rfind('.') {
+            Some(i) => (Some(rest[..i].to_string()), rest[i + 1..].to_lowercase()),
+            None => (None, rest.to_lowercase()),
+        };
+        if section.is_empty() || key.is_empty() {
+            return;
+        }
+        self.set_in(&section, subsection.as_deref(), &key, value);
+    }
 }
 
 /// Split a section header body into section and optional subsection.
