@@ -7,7 +7,7 @@ tested.
 
 ## A. Deferred implementation (code)
 
-1. **Collision-detecting SHA-1 (sha1dc)** — `crates/git-hash`
+1. **Collision-detecting SHA-1 (sha1dc)** — `crates/git-hash` — **NOT DONE**
    - Today `git-hash` uses a hand-written standard SHA-1; `CryptoHasher::is_safe()`
      returns `false` for SHA-1 (see `git-hash/src/lib.rs`).
    - Port the in-tree `sha1dc/` algorithm to pure Rust behind the existing
@@ -16,41 +16,44 @@ tested.
      `t/t0013-sha1dc.sh`).
    - Phase 0 doc: `docs/plan/phase-0-foundation.md` ("Risks").
 
-2. **`git index-pack` command** — `crates/git-command`
-   - Build an `.idx` from a `.pack` (reuse `git_odb::pack::write_idx` + entry
-     resolution, including thin-pack base resolution via the loose store).
-   - Support `git index-pack --verify <pack>` (cross-check an existing idx).
-   - Gate: our idx must pass real `git index-pack --verify` (pattern already in
-     `git-odb/tests/pack_crosswise.rs`).
-   - Phase 2 doc: `docs/plan/phase-2-packs-idx.md`.
+2. **`git index-pack` command** — **DONE** (`git-command/src/index_pack.rs`)
+   - Builds an `.idx` from a `.pack` (entry walk + `write_idx`); `--verify`
+     cross-checks an existing idx. Crosswise: real `git index-pack --verify`
+     accepts our idx and our `verify-pack` verifies real git's idx
+     (`followups_crosswise.rs`).
 
-3. **`git cat-file --batch` / `--batch-check`** — `crates/git-command`
-   - Read objects by id from loose + packs via `git_odb::Odb` (already works).
-   - Batch protocol: `oid <type> <size>\n`, `oid <type> <size>\0<content>`,
-     `missing` lines; `%(objectname) %(objecttype) ...` formats.
-   - Gate: `t/t1006-cat-file.sh`.
+3. **`git cat-file --batch` / `--batch-check`** — **DONE** (`cat_file.rs`)
+   - Reads names from stdin (refs and oids both resolve), echoes the resolved
+     oid, `missing` for absent objects. Crosswise-verified.
 
-4. **Pack delta compression in `pack-objects`** — `git-odb::pack::write`
-   - `write_pack` currently stores objects non-deltified. Add delta selection
-     (similarity scoring like `diffcore-rename`/`pack-objects`) so packs shrink.
-   - Packs written must remain verifiable by real `git verify-pack`
-     (the crosswise tests already enforce this).
-   - Phase 2 doc: `phase-2-packs-idx.md` ("write side" + Risks).
+4. **Pack delta compression in `pack-objects`** — **NOT DONE**
+   - `write_pack` still stores objects non-deltified.
 
-5. **`git count-objects -v` size fields** — `crates/git-command/count_objects.rs`
-   - `size`/`size-pack`/`prune-packable`/`garbage` are stubbed to `0`; compute
-     real values (`size = loose inodes`, `size-pack = pack bytes`, `garbage`
-     = stray files in `objects/`).
+5. **`git count-objects -v` size fields** — **DONE** (`count_objects.rs`)
+   - `size` = loose `st_blocks*512/1024`; `size-pack` = `(.pack+.idx bytes)/1024`;
+     `prune-packable` (loose also in a pack); `garbage`/`size-garbage`
+     (unrecognized files in `objects/pack`). Crosswise-verified.
 
-6. **Local-timezone / calendar parity in `git-date`** — `crates/git-date`
-   - Dates without an explicit offset are treated as UTC; real git uses the
-     local timezone. `month`/`year` relative units are approximated (30/365 d).
-   - Add a timezone source (offset from the OS) and calendar-aware relative math.
-   - Phase 0 doc: `phase-0-foundation.md` (scope note in `git-date`).
+6. **Local-timezone / calendar parity in `git-date`** — **NOT DONE** (see C).
+7. **Ident offset uses UTC** — **NOT DONE** (depends on A6).
 
-7. **Ident offset uses UTC** — `crates/git-command/ident.rs`
-   - `now_utc()` writes `+0000`; real git writes the local offset. Reuse the
-     timezone work from item A6.
+8. **`merge-base --is-ancestor`** — **DONE** (`merge_base.rs`), crosswise-verified
+   (exit-code parity; fixed the reachability direction: A is reachable from B).
+
+9. **`rev-parse --short` / `--abbrev-ref`** — **DONE** (`rev_parse.rs`),
+   crosswise-verified (7-char abbrev matches git on small repos).
+
+10. **`diff --numstat`** — **DONE** (`diff.rs` + `patch::change_line_counts`),
+    crosswise-verified.
+
+11. **`status --short`** — **DONE** (`status.rs`; also fixed entry ordering:
+    git merges index + untracked into one path-sorted list).
+
+12. **`branch` / `tag` create + delete** — **DONE** (`show_ref.rs`):
+    `git branch <name>|-d <name>` (refuses deleting the checked-out branch),
+    `git tag <name> [<oid>]|-d <name>` (lightweight). Crosswise-verified.
+
+13. **`cat-file --batch` input via refs** — DONE as part of A3.
 
 ## B. Test infrastructure not yet built
 
@@ -183,6 +186,17 @@ All defined in `docs/plan/test-infrastructure.md`; none implemented yet:
   - `fsck` options (`--strict`, `--connectivity-only`, `--no-dangling`,
     `--full`, `--lost-found`); fsck message-catalog parity.
   - `repack`/`gc`, `hash-object --literally`, `index-pack --stdin`.
+
+- **Phase 10+ stretch (partially done)** — `git apply`. Summary:
+  `docs/plan/phase-10-summary.md`. Implemented: `git apply [--check] [-p<n>]
+  [--stat]` (unified-diff parsing, hunk application with context verification,
+  new/deleted files). Cross-verified against real git. Remaining stretch:
+  - `git am`, `format-patch`; 3-way apply (`--3way`), `--index`, `--reject`,
+    whitespace options; `\ No newline at end of file`; binary patches.
+  - Submodules, notes, blame/line-log, attributes + clean/smudge filters,
+    stash, bisect.
+  - Network/transport (git://, ssh, smart HTTP, protocol v2, fetch/push/clone,
+    credential helpers, daemon, `gc`/`maintenance`).
 
 ## E. Next phases
 
