@@ -12,7 +12,7 @@ where it landed, and how it was verified. Newest entries at the bottom.
 | 2026-08-29 | A4 abbreviation resolution | DONE |
 | 2026-08-29 | A5 `rev-parse` completion | DONE (subset) |
 | 2026-08-29 | A7 pretty-printing engine | DONE (core) |
-| 2026-08-29 | A6 `rev-list`/`log` options | planned |
+| 2026-08-29 | A6 `rev-list`/`log` options | DONE (core) |
 | 2026-08-29 | A8 diff options completion | planned |
 | 2026-08-29 | A9 userdiff hunk headers | planned |
 | 2026-08-29 | A10 `count-objects -v` close-out | DONE |
@@ -167,9 +167,33 @@ Implemented per [07-pretty-engine.md](07-pretty-engine.md).
   all deterministic date modes, and the invalid-format error;
   full workspace green; scoreboard updated.
 
-### A6 — `rev-list` / `log` options
+### A6 — `rev-list` / `log` options — DONE (core)
 
 Implemented per [06-rev-list-log-options.md](06-rev-list-log-options.md).
+
+- `git-revision::rev_info` (`RevOptions` + `walk_commits`): a
+  priority-queue walk (commit-date order with FIFO tie-breaks, matching
+  C's `limit_list`), `--topo-order` (Kahn over the reachable subgraph
+  with date-desc priority among ready commits — proptest verifies
+  topological validity), exclusion closures (`--not`, `^rev`,
+  `A..B`, `A...B` with a full-ancestry merge base), parent-count filters
+  (`--merges`/`--no-merges`/`--min-parents`/`--max-parents`),
+  `--first-parent`, content filters (`--author`/`--committer`/
+  `--grep`/`--invert-grep`/`-i`), and `--reverse`/`-n`/`--skip`/
+  `--max-count`.
+- `rev-list`: `--all`/`--branches`/`--tags`/`--remotes`/`--glob=`,
+  `--count`, `--objects` (commits first, then tree/blob traversal with
+  `oid path` lines and cross-commit dedup — C's exact output order),
+  `--no-walk`/`--do-walk`, and path limiting via `--`.
+- `log`: all of the above selection/order options; `log -p`/`--stat`/
+  `--graph`/`--decorate` remain deferred (depend on A8's diff engine).
+- Path limiting: default history simplification (a commit shows only when
+  its tree differs from every parent under the pathspec), shared by
+  rev-list and log.
+- Verification: crosswise suite `phaseA06_crosswise.rs` (registered as
+  `phaseA06-crosswise`) with a merge fixture covering ~25 rev-list and
+  ~11 log option combinations, byte-identical vs C git; topo proptest;
+  full workspace green; scoreboard updated.
 
 ### A8 — diff options completion
 

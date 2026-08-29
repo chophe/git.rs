@@ -25,6 +25,7 @@ impl Command for RevList {
         let mut tips: Vec<Oid> = Vec::new();
         let mut hidden: Vec<Oid> = Vec::new();
         let mut paths: Vec<String> = Vec::new();
+        let mut path_limit = false;
         let mut negate = false;
         let mut i = 0;
         let repo = ctx.repository()?;
@@ -107,6 +108,7 @@ impl Command for RevList {
                 "--invert-grep" => opts.invert_grep = true,
                 "-i" | "--regexp-ignore-case" => opts.ignore_case = true,
                 "--" => {
+                    path_limit = true;
                     for p in &args[i + 1..] {
                         paths.push(p.clone());
                     }
@@ -141,12 +143,15 @@ impl Command for RevList {
             parse_commit(&obj.data, algo).ok()
         };
 
-        let ids: Vec<Oid> = if no_walk {
+        let mut ids: Vec<Oid> = if no_walk {
             let mut seen = HashSet::new();
             tips.into_iter().filter(|o| seen.insert(*o)).collect()
         } else {
             walk_commits(&mut loader, &tips, &hidden, &opts)
         };
+        if path_limit && !paths.is_empty() {
+            ids.retain(|oid| crate::log::commit_touches_paths(&odb, oid, &paths, algo));
+        }
 
         if count {
             writeln!(out, "{}", ids.len()).map_err(|e| CommandError::fatal(e.to_string()))?;

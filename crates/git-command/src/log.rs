@@ -39,8 +39,10 @@ impl Command for Log {
             }
         };
 
-        for a in args {
-            let a = a.clone();
+        let mut ai = 0usize;
+        while ai < args.len() {
+            let a = args[ai].clone();
+            ai += 1;
             if after_dashdash {
                 paths.push(a);
                 continue;
@@ -72,6 +74,13 @@ impl Command for Log {
                 }
                 s if s.starts_with("-n") && s.len() > 2 => {
                     opts.max_count = Some(s[2..].parse().unwrap_or(0));
+                }
+                "-n" => {
+                    let v = args
+                        .get(ai)
+                        .ok_or_else(|| CommandError::usage("log: -n requires a value"))?;
+                    ai += 1;
+                    opts.max_count = Some(v.parse().unwrap_or(0));
                 }
                 s if s.starts_with("--max-count=") => {
                     opts.max_count = Some(s["--max-count=".len()..].parse().unwrap_or(0));
@@ -252,7 +261,7 @@ fn merge_base(repo: &git_core::Repository, a: &Oid, b: &Oid) -> Option<Oid> {
 
 /// Whether a commit changes any of `paths` relative to each parent
 /// (default simplification: hidden only when treesame to all parents).
-fn commit_touches_paths(odb: &Odb, oid: &Oid, paths: &[String], algo: git_hash::HashAlgorithm) -> bool {
+pub(crate) fn commit_touches_paths(odb: &Odb, oid: &Oid, paths: &[String], algo: git_hash::HashAlgorithm) -> bool {
     let obj = match odb.read(oid) {
         Ok(o) => o,
         Err(_) => return true,

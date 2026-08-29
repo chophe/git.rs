@@ -146,7 +146,8 @@ pub fn walk_commits(
         commits.insert(q.oid, commit);
     }
 
-    // Unmark the closure of the hidden commits.
+    // Remove the closure of the hidden commits (loaded independently of
+    // the walk, which stops at hidden tips).
     if !hidden.is_empty() {
         let mut hide_queue: VecDeque<Oid> = hidden.iter().cloned().collect();
         let mut hidden_set: HashSet<Oid> = HashSet::new();
@@ -154,9 +155,9 @@ pub fn walk_commits(
             if !hidden_set.insert(oid.clone()) {
                 continue;
             }
-            if let Some(c) = commits.get(&oid) {
-                for p in &c.parents {
-                    hide_queue.push_back(p.clone());
+            if let Some(c) = loader(&oid) {
+                for p in c.parents {
+                    hide_queue.push_back(p);
                 }
             }
         }
