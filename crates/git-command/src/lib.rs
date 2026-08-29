@@ -15,6 +15,7 @@ pub mod diff;
 pub mod diff_tree;
 pub mod fsck;
 pub mod hash_object;
+pub mod index_pack;
 pub mod ident;
 pub mod log;
 pub mod merge_base;
@@ -178,6 +179,7 @@ pub fn dispatch(name: &str, args: &[String], out: &mut dyn Write) -> Option<Resu
         "merge-file" => &merge_file::MergeFile,
         "fsck" => &fsck::Fsck,
         "apply" => &apply::Apply,
+        "index-pack" => &index_pack::IndexPack,
         "tag" => &show_ref::Tag,
         _ => return None,
     };
