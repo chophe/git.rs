@@ -21,7 +21,7 @@ impl Command for Status {
         let mut porcelain = false;
         for a in args {
             match a.as_str() {
-                "--porcelain" | "--porcelain=v1" => porcelain = true,
+                "--porcelain" | "--porcelain=v1" | "--short" => porcelain = true,
                 "-z" => {}
                 s if s.starts_with('-') && s.len() > 1 => {
                     return Err(CommandError::usage(format!("status: option '{s}' not supported")));
@@ -58,6 +58,7 @@ impl Command for Status {
             index.entries.iter().map(|e| (e.name.as_str(), e)).collect();
 
         // Column X: index vs HEAD; column Y: worktree vs index.
+        let mut lines: Vec<(String, String)> = Vec::new();
         for e in &index.entries {
             let x = match base.get(&e.name) {
                 Some(b) if *b == e.oid => ' ',
@@ -77,13 +78,19 @@ impl Command for Status {
                 }
             };
             if x != ' ' || y != ' ' {
-                writeln!(out, "{x}{y} {}", e.name).map_err(|e| CommandError::fatal(e.to_string()))?;
+                lines.push((e.name.clone(), format!("{x}{y} {}", e.name)));
             }
         }
 
         // Untracked files.
         for path in untracked(work_tree, &index_entries, algo) {
-            writeln!(out, "?? {path}").map_err(|e| CommandError::fatal(e.to_string()))?;
+            lines.push((path.clone(), format!("?? {path}")));
+        }
+
+        // git merges index and untracked entries into one path-sorted list.
+        lines.sort_by(|a, b| a.0.cmp(&b.0));
+        for (_, line) in &lines {
+            writeln!(out, "{line}").map_err(|e| CommandError::fatal(e.to_string()))?;
         }
         Ok(())
     }
