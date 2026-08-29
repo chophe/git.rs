@@ -86,7 +86,7 @@ impl Error for CommandError {}
 
 impl From<RepoError> for CommandError {
     fn from(e: RepoError) -> CommandError {
-        CommandError::fatal(e.to_string())
+        CommandError::fatal(format!("fatal: {e}"))
     }
 }
 

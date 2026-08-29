@@ -218,6 +218,7 @@ fn odb_reads_from_real_pack() {
         hash_algo: algo,
         config: git_config::ConfigSet::new(),
         index_file: None,
+        git_dir_specified: None,
         object_dir: None,
         alternates: Vec::new(),
     };

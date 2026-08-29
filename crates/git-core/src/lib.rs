@@ -19,6 +19,8 @@ pub use strbuf::StringBuf;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RepoError {
     NotFound,
+    /// An explicit GIT_DIR override that is not a valid git directory.
+    NotARepository(String),
     Config(git_config::ConfigError),
     Io(String),
 }
@@ -29,6 +31,7 @@ impl fmt::Display for RepoError {
             RepoError::NotFound => {
                 write!(f, "not a git repository (or any of the parent directories)")
             }
+            RepoError::NotARepository(g) => write!(f, "not a git repository: '{g}'"),
             RepoError::Config(e) => write!(f, "{e}"),
             RepoError::Io(e) => write!(f, "{e}"),
         }
@@ -98,6 +101,9 @@ pub struct Repository {
     pub config: ConfigSet,
     /// Index file override (`GIT_INDEX_FILE`), if any.
     pub index_file: Option<PathBuf>,
+    /// The `--git-dir`/`GIT_DIR` value verbatim as given, when overridden
+    /// (C git echoes it back from `rev-parse --git-dir`).
+    pub git_dir_specified: Option<PathBuf>,
     /// Objects directory override (`GIT_OBJECT_DIRECTORY`), if any.
     pub object_dir: Option<PathBuf>,
     /// Extra object search directories (`GIT_ALTERNATE_OBJECT_DIRECTORIES`).
@@ -108,10 +114,23 @@ impl Repository {
     /// Discover a repository starting from `start`, applying `env` overrides.
     pub fn discover_from(start: &Path, env: &RepoEnv) -> Result<Repository, RepoError> {
         let git_dir = match &env.git_dir {
-            Some(g) => make_absolute(start, g),
-            None => find_git_dir(start)?.ok_or(RepoError::NotFound)?,
+            Some(g) => {
+                let candidate = canonicalize_preserve(&make_absolute(start, g));
+                // An explicit override must be a valid git directory
+                // (matching C git's validation of GIT_DIR).
+                if !candidate.is_dir()
+                    || !candidate.join("objects").is_dir()
+                    || !candidate.join("refs").is_dir()
+                {
+                    return Err(RepoError::NotARepository(g.to_string_lossy().into_owned()));
+                }
+                candidate
+            }
+            None => {
+                let found = find_git_dir(start)?.ok_or(RepoError::NotFound)?;
+                canonicalize_preserve(&found)
+            }
         };
-        let git_dir = canonicalize_preserve(&git_dir);
 
         let common_dir = match &env.common_dir {
             Some(c) => make_absolute(&git_dir, c),
@@ -151,6 +170,7 @@ impl Repository {
 
         Ok(Repository {
             git_dir,
+            git_dir_specified: env.git_dir.clone(),
             common_dir,
             work_tree,
             bare,

@@ -94,9 +94,10 @@ All defined in `docs/plan/test-infrastructure.md`; none implemented yet:
 - **`pack-objects`**: non-deltified packs (see A4).
 - **`hash-object`** outside a repo always hashes with SHA-1 (matches git
   default; fine, but confirm `-t`/`--stdin` parity against `t1007`).
-- **`git-command`** uses `std::env::set_current_dir`-free design; repo discovery
-  always starts at CWD — matches git, but `--git-dir`/`--work-tree` CLI
-  overrides are not yet threaded through commands.
+- **DONE (A2)** — `git-command` uses `std::env::set_current_dir`-free design;
+  a shared `RepoContext` threads `--git-dir`/`--work-tree`/`--bare`/`-C`/`-c`
+  CLI overrides and `GIT_*` env vars through every command
+  (see `phase-a/02-repo-discovery-env.md` and `phase-a/PROGRESS.md`).
 - **`commit-tree`** requires full-length object ids for tree/parents (no
   abbreviation resolution yet; that needs `rev-parse`/refs, Phase 7).
 

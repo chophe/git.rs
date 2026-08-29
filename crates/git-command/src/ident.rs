@@ -126,6 +126,7 @@ mod tests {
             hash_algo: git_hash::HashAlgorithm::Sha1,
             config: git_config::ConfigSet::new(),
             index_file: None,
+            git_dir_specified: None,
             object_dir: None,
             alternates: Vec::new(),
         };
