@@ -2,8 +2,7 @@
 
 use std::io::Write;
 
-use crate::{Command, CommandError};
-use git_core::Repository;
+use crate::{Command, CommandError, RepoContext};
 use git_hash::Oid;
 use git_object::{parse_commit, ObjectKind};
 use git_odb::Odb;
@@ -16,7 +15,7 @@ impl Command for Log {
         "log"
     }
 
-    fn run(&self, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
+    fn run(&self, ctx: &RepoContext, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
         let mut oneline = false;
         let mut tip: Option<String> = None;
         for a in args {
@@ -30,7 +29,7 @@ impl Command for Log {
         }
         let tip = tip.ok_or_else(|| CommandError::usage("log: missing commit"))?;
 
-        let repo = Repository::discover()?;
+        let repo = ctx.repository()?;
         let odb = Odb::from_repo(&repo).map_err(CommandError::from)?;
         let algo = repo.hash_algo;
         let tip_oid = crate::resolve_arg(&repo, &tip)?;

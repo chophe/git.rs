@@ -2,8 +2,7 @@
 
 use std::io::Write;
 
-use crate::{Command, CommandError};
-use git_core::Repository;
+use crate::{Command, CommandError, RepoContext};
 use git_hash::Oid;
 use git_object::{parse_commit, ObjectKind};
 use git_odb::Odb;
@@ -16,7 +15,7 @@ impl Command for RevList {
         "rev-list"
     }
 
-    fn run(&self, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
+    fn run(&self, ctx: &RepoContext, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
         let mut with_parents = false;
         let mut tips: Vec<String> = Vec::new();
         for a in args {
@@ -33,7 +32,7 @@ impl Command for RevList {
             return Err(CommandError::usage("rev-list: missing commit"));
         }
 
-        let repo = Repository::discover()?;
+        let repo = ctx.repository()?;
         let odb = Odb::from_repo(&repo).map_err(CommandError::from)?;
         let algo = repo.hash_algo;
 

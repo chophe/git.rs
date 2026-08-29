@@ -8,6 +8,7 @@ use std::sync::Mutex;
 
 use git_command::Command as GitCommand;
 use git_command::fsck::Fsck;
+use git_command::RepoContext;
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 static CWD_LOCK: Mutex<()> = Mutex::new(());
@@ -58,7 +59,8 @@ fn our_fsck(dir: &Path) -> (String, i32) {
     with_cwd(dir, || {
         let args: Vec<String> = Vec::new();
         let mut out_buf = Vec::new();
-        let code = match Fsck.run(&args, &mut out_buf) {
+        let ctx = RepoContext::new();
+        let code = match Fsck.run(&ctx, &args, &mut out_buf) {
             Ok(()) => 0,
             Err(e) => e.code,
         };

@@ -5,7 +5,7 @@ use std::io::Write;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
-use crate::{Command, CommandError};
+use crate::{Command, CommandError, RepoContext};
 use git_core::Repository;
 use git_odb::Odb;
 
@@ -24,7 +24,7 @@ impl Command for CountObjects {
         "count-objects"
     }
 
-    fn run(&self, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
+    fn run(&self, ctx: &RepoContext, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
         let mut verbose = false;
         for a in args {
             match a.as_str() {
@@ -32,7 +32,7 @@ impl Command for CountObjects {
                 _ => return Err(CommandError::usage(format!("count-objects: unknown option '{a}'"))),
             }
         }
-        let repo = Repository::discover()?;
+        let repo = ctx.repository()?;
         let odb = Odb::from_repo(&repo).map_err(CommandError::from)?;
         let loose_oids = odb.loose.iter_oids();
         let loose = loose_oids.len();

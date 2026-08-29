@@ -2,9 +2,8 @@
 
 use std::io::Write;
 
-use crate::{Command, CommandError};
+use crate::{Command, CommandError, RepoContext};
 use git_commitgraph::CommitGraph;
-use git_core::Repository;
 
 pub struct CommitGraphCmd;
 
@@ -13,7 +12,7 @@ impl Command for CommitGraphCmd {
         "commit-graph"
     }
 
-    fn run(&self, args: &[String], _out: &mut dyn Write) -> Result<(), CommandError> {
+    fn run(&self, ctx: &RepoContext, args: &[String], _out: &mut dyn Write) -> Result<(), CommandError> {
         let mut subcommand: Option<String> = None;
         for a in args {
             if a == "write" || a == "verify" {
@@ -30,7 +29,7 @@ impl Command for CommitGraphCmd {
             ));
         }
 
-        let repo = Repository::discover()?;
+        let repo = ctx.repository()?;
         let path = repo.common_dir.join("objects/info/commit-graph");
         let data = std::fs::read(&path).map_err(|_| {
             CommandError::error(format!("could not open commit-graph '{}'", path.display()))

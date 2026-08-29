@@ -8,7 +8,7 @@ use std::sync::Mutex;
 
 use git_command::Command as GitCommand;
 use git_command::{diff, diff_tree};
-use git_command::CommandError;
+use git_command::{CommandError, RepoContext};
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 static CWD_LOCK: Mutex<()> = Mutex::new(());
@@ -72,7 +72,8 @@ fn build_repo() -> (PathBuf, String, String) {
 
 fn ours<C: GitCommand>(cmd: &C, args: &[String]) -> Result<String, CommandError> {
     let mut out = Vec::new();
-    cmd.run(args, &mut out)?;
+    let ctx = RepoContext::new();
+    cmd.run(&ctx, args, &mut out)?;
     Ok(String::from_utf8(out).unwrap())
 }
 
@@ -80,7 +81,8 @@ fn ours<C: GitCommand>(cmd: &C, args: &[String]) -> Result<String, CommandError>
 /// differences, so tests must compare both.
 fn ours_with_code<C: GitCommand>(cmd: &C, args: &[String]) -> (String, i32) {
     let mut out = Vec::new();
-    let code = match cmd.run(args, &mut out) {
+    let ctx = RepoContext::new();
+    let code = match cmd.run(&ctx, args, &mut out) {
         Ok(()) => 0,
         Err(e) => e.code,
     };

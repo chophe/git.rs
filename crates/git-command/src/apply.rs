@@ -2,7 +2,7 @@
 
 use std::io::Write;
 
-use crate::{Command, CommandError};
+use crate::{Command, CommandError, RepoContext};
 
 pub struct Apply;
 
@@ -11,7 +11,7 @@ impl Command for Apply {
         "apply"
     }
 
-    fn run(&self, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
+    fn run(&self, _ctx: &RepoContext, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
         let mut check = false;
         let mut stat = false;
         let mut strip = 1usize;

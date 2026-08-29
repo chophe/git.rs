@@ -38,8 +38,9 @@ pub mod verify_pack;
 use std::error::Error;
 use std::fmt;
 use std::io::Write;
+use std::path::PathBuf;
 
-use git_core::{RepoError, Repository};
+use git_core::{RepoEnv, RepoError, Repository};
 use git_commitgraph::GraphError;
 use git_odb::pack::{MidxError, PackError};
 use git_odb::OdbError;
@@ -113,6 +114,176 @@ impl From<GraphError> for CommandError {
     }
 }
 
+/// The per-invocation repository context.
+///
+/// Every command receives this explicitly instead of calling
+/// `Repository::discover()` itself. It carries the resolved working directory
+/// (after `-C`), the `GIT_DIR`/`GIT_WORK_TREE`/`GIT_COMMON_DIR` overrides
+/// (CLI flags take precedence over env vars, which take precedence over
+/// discovery), and `git -c` config overrides.
+#[derive(Debug, Clone)]
+pub struct RepoContext {
+    /// Effective working directory (`-C` applied; never mutates process cwd).
+    pub cwd: PathBuf,
+    pub git_dir: Option<PathBuf>,
+    pub work_tree: Option<PathBuf>,
+    pub common_dir: Option<PathBuf>,
+    /// `--bare`: operate in bare-repository mode.
+    pub bare: bool,
+    /// `git -c name=value` overlays applied on top of the repo config.
+    pub config_overrides: Vec<(String, Option<String>)>,
+}
+
+impl RepoContext {
+    /// Build a context from the process environment and current directory.
+    pub fn new() -> RepoContext {
+        let cwd = std::env::current_dir()
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("."));
+        RepoContext {
+            cwd,
+            git_dir: std::env::var_os("GIT_DIR").map(PathBuf::from),
+            work_tree: std::env::var_os("GIT_WORK_TREE").map(PathBuf::from),
+            common_dir: std::env::var_os("GIT_COMMON_DIR").map(PathBuf::from),
+            bare: false,
+            config_overrides: Vec::new(),
+        }
+    }
+
+    /// Parse C-git global options appearing before the subcommand.
+    ///
+    /// Recognized: `-C <dir>`, `-c <name>[=<value>]`, `--git-dir[=]<path>`,
+    /// `--work-tree[=]<path>`, `--common-dir[=]<path>`, `--bare`,
+    /// `--no-pager`, `--paginate`, `--literal-pathspecs`. Returns the context
+    /// and the remaining arguments (starting with the subcommand name).
+    pub fn from_global_args(args: &[String]) -> Result<(RepoContext, Vec<String>), CommandError> {
+        let mut ctx = RepoContext::new();
+        let mut rest: Vec<String> = Vec::new();
+        let mut i = 0;
+        while i < args.len() {
+            let a = &args[i];
+            if a == "-C" {
+                i += 1;
+                match args.get(i) {
+                    Some(v) => ctx.cwd = ctx.cwd.join(v),
+                    None => {
+                        return Err(CommandError::usage("option `-C' requires a value"));
+                    }
+                }
+            } else if let Some(v) = a.strip_prefix("-C") {
+                if !v.is_empty() {
+                    ctx.cwd = ctx.cwd.join(v);
+                }
+            } else if a == "-c" {
+                i += 1;
+                match args.get(i) {
+                    Some(v) => ctx.config_overrides.push(split_config_pair(v)),
+                    None => {
+                        return Err(CommandError::usage("option `-c' requires a value"));
+                    }
+                }
+            } else if let Some(v) = a.strip_prefix("--git-dir=") {
+                ctx.git_dir = Some(PathBuf::from(v));
+            } else if a == "--git-dir" {
+                i += 1;
+                match args.get(i) {
+                    Some(v) => ctx.git_dir = Some(PathBuf::from(v)),
+                    None => {
+                        return Err(CommandError::usage(
+                            "option `--git-dir' requires a value",
+                        ));
+                    }
+                }
+            } else if let Some(v) = a.strip_prefix("--work-tree=") {
+                ctx.work_tree = Some(PathBuf::from(v));
+            } else if a == "--work-tree" {
+                i += 1;
+                match args.get(i) {
+                    Some(v) => ctx.work_tree = Some(PathBuf::from(v)),
+                    None => {
+                        return Err(CommandError::usage(
+                            "option `--work-tree' requires a value",
+                        ));
+                    }
+                }
+            } else if let Some(v) = a.strip_prefix("--common-dir=") {
+                ctx.common_dir = Some(PathBuf::from(v));
+            } else if a == "--common-dir" {
+                i += 1;
+                match args.get(i) {
+                    Some(v) => ctx.common_dir = Some(PathBuf::from(v)),
+                    None => {
+                        return Err(CommandError::usage(
+                            "option `--common-dir' requires a value",
+                        ));
+                    }
+                }
+            } else if a == "--bare" {
+                ctx.bare = true;
+                ctx.work_tree = None;
+            } else if a == "--no-pager" || a == "--paginate" || a == "--literal-pathspecs" {
+                // Accepted for compatibility; paging is not implemented.
+            } else if a.starts_with('-') && a.len() > 1 {
+                return Err(CommandError::usage(format!(
+                    "unknown option: {a}"
+                )));
+            } else {
+                rest = args[i..].to_vec();
+                break;
+            }
+            i += 1;
+        }
+        Ok((ctx, rest))
+    }
+
+    /// A context rooted at `dir`, with no overrides (useful for tests).
+    pub fn at(dir: &std::path::Path) -> RepoContext {
+        RepoContext {
+            cwd: dir.to_path_buf(),
+            git_dir: None,
+            work_tree: None,
+            common_dir: None,
+            bare: false,
+            config_overrides: Vec::new(),
+        }
+    }
+
+    /// Discover the repository for this context, applying config overrides.
+    pub fn repository(&self) -> Result<Repository, CommandError> {
+        let env = RepoEnv {
+            git_dir: self.git_dir.clone(),
+            work_tree: self.work_tree.clone(),
+            common_dir: self.common_dir.clone(),
+            index_file: std::env::var_os("GIT_INDEX_FILE").map(PathBuf::from),
+            object_dir: std::env::var_os("GIT_OBJECT_DIRECTORY").map(PathBuf::from),
+            alternates: std::env::var_os("GIT_ALTERNATE_OBJECT_DIRECTORIES")
+                .map(|v| {
+                    std::env::split_paths(&v)
+                        .filter(|p| !p.as_os_str().is_empty())
+                        .collect()
+                })
+                .unwrap_or_default(),
+        };
+        let mut repo = Repository::discover_from(&self.cwd, &env).map_err(CommandError::from)?;
+        if self.bare {
+            repo.bare = true;
+            repo.work_tree = None;
+        }
+        for (name, value) in &self.config_overrides {
+            repo.config.set_cli(name, value.as_deref());
+        }
+        Ok(repo)
+    }
+}
+
+/// Split `name=value` (missing `=` means boolean true, matching `git -c`).
+fn split_config_pair(s: &str) -> (String, Option<String>) {
+    match s.split_once('=') {
+        Some((name, value)) => (name.to_string(), Some(value.to_string())),
+        None => (s.to_string(), None),
+    }
+}
+
 /// A git subcommand.
 pub trait Command {
     /// The subcommand name used on the command line.
@@ -122,7 +293,7 @@ pub trait Command {
     ///
     /// `args` are the arguments following the subcommand name. Primary output
     /// is written to `out`.
-    fn run(&self, args: &[String], out: &mut dyn Write) -> Result<(), CommandError>;
+    fn run(&self, ctx: &RepoContext, args: &[String], out: &mut dyn Write) -> Result<(), CommandError>;
 }
 
 /// Resolve a revision argument: a full hex oid, or a ref name (e.g. `HEAD`,
@@ -148,8 +319,21 @@ pub fn resolve_arg(repo: &Repository, s: &str) -> Result<git_hash::Oid, CommandE
 
 /// Route a subcommand name to its implementation.
 ///
-/// Returns `None` if `name` is not a known command.
+/// Returns `None` if `name` is not a known command. The context is built from
+/// the process environment (no global CLI options).
 pub fn dispatch(name: &str, args: &[String], out: &mut dyn Write) -> Option<Result<(), CommandError>> {
+    let ctx = RepoContext::new();
+    dispatch_with(&ctx, name, args, out)
+}
+
+/// Route a subcommand name to its implementation using a caller-supplied
+/// context (i.e. one built by parsing global CLI options).
+pub fn dispatch_with(
+    ctx: &RepoContext,
+    name: &str,
+    args: &[String],
+    out: &mut dyn Write,
+) -> Option<Result<(), CommandError>> {
     let cmd: &dyn Command = match name {
         "hash-object" => &hash_object::HashObject,
         "commit-tree" => &commit_tree::CommitTree,
@@ -183,7 +367,7 @@ pub fn dispatch(name: &str, args: &[String], out: &mut dyn Write) -> Option<Resu
         "tag" => &show_ref::Tag,
         _ => return None,
     };
-    Some(cmd.run(args, out))
+    Some(cmd.run(ctx, args, out))
 }
 
 #[cfg(test)]

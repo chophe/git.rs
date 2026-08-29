@@ -2,8 +2,7 @@
 
 use std::io::Write;
 
-use crate::{Command, CommandError};
-use git_core::Repository;
+use crate::{Command, CommandError, RepoContext};
 use git_odb::Odb;
 use git_refs::RefStore;
 
@@ -14,13 +13,13 @@ impl Command for ShowRef {
         "show-ref"
     }
 
-    fn run(&self, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
+    fn run(&self, ctx: &RepoContext, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
         for a in args {
             if !a.starts_with('-') {
                 return Err(CommandError::usage(format!("show-ref: unexpected argument '{a}'")));
             }
         }
-        let repo = Repository::discover()?;
+        let repo = ctx.repository()?;
         let store = RefStore::from_repo(&repo);
         for (name, oid) in store.list() {
             writeln!(out, "{oid} {name}").map_err(|e| CommandError::fatal(e.to_string()))?;
@@ -36,7 +35,7 @@ impl Command for ForEachRef {
         "for-each-ref"
     }
 
-    fn run(&self, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
+    fn run(&self, ctx: &RepoContext, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
         let mut pattern: Option<String> = None;
         let mut format = "%(objectname) %(objecttype)\t%(refname)".to_string();
         for a in args {
@@ -49,7 +48,7 @@ impl Command for ForEachRef {
             }
         }
 
-        let repo = Repository::discover()?;
+        let repo = ctx.repository()?;
         let store = RefStore::from_repo(&repo);
         let odb = Odb::from_repo(&repo).map_err(CommandError::from)?;
         let refs = store.list();
@@ -77,11 +76,12 @@ impl Command for ForEachRef {
 /// List refs under a prefix, printing the short name (used by `branch` and
 /// `tag`). `mark_head` prefixes `* ` to the current branch.
 pub fn list_short(
+    ctx: &RepoContext,
     out: &mut dyn Write,
     prefix: &str,
     mark_head: bool,
 ) -> Result<(), CommandError> {
-    let repo = Repository::discover()?;
+    let repo = ctx.repository()?;
     let store = RefStore::from_repo(&repo);
     let head_target = if mark_head {
         store.head_symbolic_target()
@@ -113,8 +113,8 @@ impl Command for Branch {
         "branch"
     }
 
-    fn run(&self, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
-        let repo = Repository::discover()?;
+    fn run(&self, ctx: &RepoContext, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
+        let repo = ctx.repository()?;
         let store = git_refs::RefStore::from_repo(&repo);
         let algo = repo.hash_algo;
 
@@ -150,7 +150,7 @@ impl Command for Branch {
         }
 
         if rest.is_empty() {
-            return list_short(out, "refs/heads/", true);
+            return list_short(ctx, out, "refs/heads/", true);
         }
         if rest.len() != 1 {
             return Err(CommandError::usage("branch: too many arguments"));
@@ -173,8 +173,8 @@ impl Command for Tag {
         "tag"
     }
 
-    fn run(&self, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
-        let repo = Repository::discover()?;
+    fn run(&self, ctx: &RepoContext, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
+        let repo = ctx.repository()?;
         let store = git_refs::RefStore::from_repo(&repo);
         let algo = repo.hash_algo;
 
@@ -203,7 +203,7 @@ impl Command for Tag {
         }
 
         if rest.is_empty() {
-            return list_short(out, "refs/tags/", false);
+            return list_short(ctx, out, "refs/tags/", false);
         }
         // Create: lightweight tag at HEAD (or the given object).
         let target = if rest.len() > 1 {

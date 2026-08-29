@@ -2,7 +2,7 @@
 
 use std::io::Write;
 
-use crate::{Command, CommandError};
+use crate::{Command, CommandError, RepoContext};
 use git_diff::split_lines;
 use git_merge::{diff_changes, merge3};
 
@@ -13,7 +13,7 @@ impl Command for MergeFile {
         "merge-file"
     }
 
-    fn run(&self, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
+    fn run(&self, _ctx: &RepoContext, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
         let mut to_stdout = false;
         let mut rest: Vec<String> = Vec::new();
         for a in args {

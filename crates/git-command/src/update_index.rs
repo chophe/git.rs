@@ -3,8 +3,7 @@
 use std::io::Write;
 use std::os::unix::fs::MetadataExt;
 
-use crate::{Command, CommandError};
-use git_core::Repository;
+use crate::{Command, CommandError, RepoContext};
 use git_index::{Index, IndexEntry};
 use git_object::{Object, ObjectKind};
 use git_odb::LooseStore;
@@ -16,7 +15,7 @@ impl Command for UpdateIndex {
         "update-index"
     }
 
-    fn run(&self, args: &[String], _out: &mut dyn Write) -> Result<(), CommandError> {
+    fn run(&self, ctx: &RepoContext, args: &[String], _out: &mut dyn Write) -> Result<(), CommandError> {
         let mut add = false;
         let mut remove = false;
         let mut paths: Vec<String> = Vec::new();
@@ -41,7 +40,7 @@ impl Command for UpdateIndex {
             return Err(CommandError::usage("update-index: no paths given"));
         }
 
-        let repo = Repository::discover()?;
+        let repo = ctx.repository()?;
         let algo = repo.hash_algo;
         let work_tree = repo
             .work_tree

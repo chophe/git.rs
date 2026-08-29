@@ -2,8 +2,7 @@
 
 use std::io::{Read, Write};
 
-use crate::{Command, CommandError};
-use git_core::Repository;
+use crate::{Command, CommandError, RepoContext};
 use git_hash::Oid;
 use git_odb::pack::PackFile;
 use git_odb::LooseStore;
@@ -15,14 +14,14 @@ impl Command for UnpackObjects {
         "unpack-objects"
     }
 
-    fn run(&self, args: &[String], _out: &mut dyn Write) -> Result<(), CommandError> {
+    fn run(&self, ctx: &RepoContext, args: &[String], _out: &mut dyn Write) -> Result<(), CommandError> {
         for a in args {
             if a != "-q" {
                 return Err(CommandError::usage(format!("unpack-objects: unknown option '{a}'")));
             }
         }
 
-        let repo = Repository::discover()?;
+        let repo = ctx.repository()?;
         let store = LooseStore::from_repo(&repo);
         let algo = repo.hash_algo;
 

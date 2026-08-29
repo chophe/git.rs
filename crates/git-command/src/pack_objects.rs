@@ -2,8 +2,7 @@
 
 use std::io::{BufRead, Write};
 
-use crate::{Command, CommandError};
-use git_core::Repository;
+use crate::{Command, CommandError, RepoContext};
 use git_hash::Oid;
 use git_odb::pack::{write_pack, PackObject};
 use git_odb::Odb;
@@ -15,7 +14,7 @@ impl Command for PackObjects {
         "pack-objects"
     }
 
-    fn run(&self, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
+    fn run(&self, ctx: &RepoContext, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
         let mut to_stdout = false;
         let mut base_name: Option<String> = None;
         for a in args {
@@ -32,7 +31,7 @@ impl Command for PackObjects {
             return Err(CommandError::usage("pack-objects: --stdout and <base-name> are mutually exclusive"));
         }
 
-        let repo = Repository::discover()?;
+        let repo = ctx.repository()?;
         let odb = Odb::from_repo(&repo).map_err(CommandError::from)?;
         let algo = repo.hash_algo;
 

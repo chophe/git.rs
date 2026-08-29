@@ -3,8 +3,7 @@
 use std::collections::HashMap;
 use std::io::Write;
 
-use crate::{Command, CommandError};
-use git_core::Repository;
+use crate::{Command, CommandError, RepoContext};
 use git_hash::{HashAlgorithm, Oid};
 use git_index::Index;
 use git_object::{parse_commit, parse_tree, Object, ObjectKind};
@@ -17,7 +16,7 @@ impl Command for Status {
         "status"
     }
 
-    fn run(&self, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
+    fn run(&self, ctx: &RepoContext, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
         let mut porcelain = false;
         for a in args {
             match a.as_str() {
@@ -33,7 +32,7 @@ impl Command for Status {
             return Err(CommandError::usage("status: only --porcelain is supported"));
         }
 
-        let repo = Repository::discover()?;
+        let repo = ctx.repository()?;
         let algo = repo.hash_algo;
         let odb = Odb::from_repo(&repo).map_err(CommandError::from)?;
         let work_tree = repo

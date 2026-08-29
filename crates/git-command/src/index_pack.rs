@@ -2,8 +2,7 @@
 
 use std::io::Write;
 
-use crate::{Command, CommandError};
-use git_core::Repository;
+use crate::{Command, CommandError, RepoContext};
 use git_hash::Oid;
 use git_odb::pack::crc32::crc32;
 use git_odb::pack::{write_idx, PackFile, PackIndex};
@@ -15,7 +14,7 @@ impl Command for IndexPack {
         "index-pack"
     }
 
-    fn run(&self, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
+    fn run(&self, ctx: &RepoContext, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
         let mut verify = false;
         let mut files: Vec<String> = Vec::new();
         for a in args {
@@ -36,7 +35,7 @@ impl Command for IndexPack {
 
         if verify {
             // Verify an existing pack against its index.
-            let repo = Repository::discover().ok();
+            let repo = ctx.repository().ok();
             let algo = repo.as_ref().map(|r| r.hash_algo).unwrap_or(git_hash::HashAlgorithm::Sha1);
             let idx_data = std::fs::read(&idx_path)
                 .map_err(|e| CommandError::error(format!("cannot open '{}': {e}", idx_path.display())))?;
@@ -46,7 +45,7 @@ impl Command for IndexPack {
             return Ok(());
         }
 
-        let repo = Repository::discover()?;
+        let repo = ctx.repository()?;
         let algo = repo.hash_algo;
         let data = std::fs::read(&pack_path)
             .map_err(|e| CommandError::error(format!("cannot open '{}': {e}", pack_path.display())))?;

@@ -2,8 +2,7 @@
 
 use std::io::Write;
 
-use crate::{Command, CommandError};
-use git_core::Repository;
+use crate::{Command, CommandError, RepoContext};
 use git_hash::Oid;
 use git_refs::RefStore;
 
@@ -14,8 +13,8 @@ impl Command for RevParse {
         "rev-parse"
     }
 
-    fn run(&self, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
-        let repo = Repository::discover()?;
+    fn run(&self, ctx: &RepoContext, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
+        let repo = ctx.repository()?;
         let store = RefStore::from_repo(&repo);
         let algo = repo.hash_algo;
 

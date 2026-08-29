@@ -2,8 +2,7 @@
 
 use std::io::{BufRead, Write};
 
-use crate::{Command, CommandError};
-use git_core::Repository;
+use crate::{Command, CommandError, RepoContext};
 use git_hash::Oid;
 use git_object::{serialize_tree, Object, ObjectKind, TreeEntry};
 use git_odb::LooseStore;
@@ -15,14 +14,14 @@ impl Command for MkTree {
         "mktree"
     }
 
-    fn run(&self, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
+    fn run(&self, ctx: &RepoContext, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
         for a in args {
             if a != "--missing" && !a.is_empty() {
                 return Err(CommandError::usage(format!("mktree: unknown option '{a}'")));
             }
         }
 
-        let repo = Repository::discover()?;
+        let repo = ctx.repository()?;
         let store = LooseStore::from_repo(&repo);
         let algo = repo.hash_algo;
 

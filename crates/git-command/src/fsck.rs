@@ -3,8 +3,7 @@
 use std::collections::HashSet;
 use std::io::Write;
 
-use crate::{Command, CommandError};
-use git_core::Repository;
+use crate::{Command, CommandError, RepoContext};
 use git_hash::Oid;
 use git_object::{parse_commit, parse_tag, parse_tree};
 use git_odb::Odb;
@@ -17,14 +16,14 @@ impl Command for Fsck {
         "fsck"
     }
 
-    fn run(&self, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
+    fn run(&self, ctx: &RepoContext, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
         for a in args {
             if !a.starts_with('-') {
                 return Err(CommandError::usage(format!("fsck: unexpected argument '{a}'")));
             }
         }
 
-        let repo = Repository::discover()?;
+        let repo = ctx.repository()?;
         let odb = Odb::from_repo(&repo).map_err(CommandError::from)?;
         let store = RefStore::from_repo(&repo);
         let algo = repo.hash_algo;

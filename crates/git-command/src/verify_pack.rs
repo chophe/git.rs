@@ -3,8 +3,7 @@
 use std::io::Write;
 use std::path::PathBuf;
 
-use crate::{Command, CommandError};
-use git_core::Repository;
+use crate::{Command, CommandError, RepoContext};
 use git_hash::HashAlgorithm;
 use git_odb::pack::{PackFile, PackIndex};
 
@@ -15,7 +14,7 @@ impl Command for VerifyPack {
         "verify-pack"
     }
 
-    fn run(&self, args: &[String], _out: &mut dyn Write) -> Result<(), CommandError> {
+    fn run(&self, ctx: &RepoContext, args: &[String], _out: &mut dyn Write) -> Result<(), CommandError> {
         let mut files: Vec<String> = Vec::new();
         for a in args {
             if a.starts_with('-') && a.len() > 1 {
@@ -29,7 +28,7 @@ impl Command for VerifyPack {
             ));
         }
 
-        let algo = Repository::discover().ok().map(|r| r.hash_algo).unwrap_or(HashAlgorithm::Sha1);
+        let algo = ctx.repository().ok().map(|r| r.hash_algo).unwrap_or(HashAlgorithm::Sha1);
         let (idx_path, pack_path) = split_pack_paths(&files[0]);
 
         let idx_data = std::fs::read(&idx_path)

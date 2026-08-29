@@ -2,8 +2,7 @@
 
 use std::io::Write;
 
-use crate::{Command, CommandError};
-use git_core::Repository;
+use crate::{Command, CommandError, RepoContext};
 use git_hash::Oid;
 use git_merge::merge_bases;
 use git_object::{parse_commit, ObjectKind};
@@ -16,7 +15,7 @@ impl Command for MergeBase {
         "merge-base"
     }
 
-    fn run(&self, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
+    fn run(&self, ctx: &RepoContext, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
         let mut all = false;
         let mut is_ancestor = false;
         let mut rest: Vec<String> = Vec::new();
@@ -37,7 +36,7 @@ impl Command for MergeBase {
             return Err(CommandError::usage("merge-base: requires two <commit> arguments"));
         }
 
-        let repo = Repository::discover()?;
+        let repo = ctx.repository()?;
         let odb = Odb::from_repo(&repo).map_err(CommandError::from)?;
         let algo = repo.hash_algo;
         let a = crate::resolve_arg(&repo, &rest[0])?;

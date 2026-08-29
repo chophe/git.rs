@@ -4,9 +4,8 @@
 
 use std::io::{Read, Write};
 
-use crate::{Command, CommandError};
+use crate::{Command, CommandError, RepoContext};
 use crate::ident;
-use git_core::Repository;
 use git_hash::Oid;
 use git_object::{Object, ObjectKind};
 use git_odb::LooseStore;
@@ -18,8 +17,8 @@ impl Command for CommitTree {
         "commit-tree"
     }
 
-    fn run(&self, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
-        let repo = Repository::discover()?;
+    fn run(&self, ctx: &RepoContext, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
+        let repo = ctx.repository()?;
         let store = LooseStore::from_repo(&repo);
 
         let mut tree: Option<String> = None;
@@ -130,7 +129,9 @@ mod tests {
 
         let mut out = Vec::new();
         let res = crate::tests::with_cwd(&dir, || {
+            let ctx = RepoContext::new();
             CommitTree.run(
+                &ctx,
                 &[
                     "-m".to_string(),
                     "initial commit".to_string(),
@@ -170,7 +171,9 @@ mod tests {
 
         let mut out = Vec::new();
         crate::tests::with_cwd(&dir, || {
+            let ctx = RepoContext::new();
             CommitTree.run(
+                &ctx,
                 &[
                     "-p".to_string(),
                     parent.clone(),
@@ -196,7 +199,8 @@ mod tests {
     #[test]
     fn missing_tree_is_usage_error() {
         let mut out = Vec::new();
-        let err = CommitTree.run(&["-m".to_string(), "msg".to_string()], &mut out).unwrap_err();
+        let ctx = RepoContext::new();
+        let err = CommitTree.run(&ctx, &["-m".to_string(), "msg".to_string()], &mut out).unwrap_err();
         assert_eq!(err.code, 129);
     }
 }

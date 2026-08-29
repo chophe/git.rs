@@ -3,7 +3,7 @@
 use std::io::Write;
 use std::path::Path;
 
-use crate::{Command, CommandError};
+use crate::{Command, CommandError, RepoContext};
 use git_core::Repository;
 use git_odb::pack::midx::{write_from_indexes, Midx};
 use git_odb::pack::PackIndex;
@@ -15,7 +15,7 @@ impl Command for MultiPackIndex {
         "multi-pack-index"
     }
 
-    fn run(&self, args: &[String], _out: &mut dyn Write) -> Result<(), CommandError> {
+    fn run(&self, ctx: &RepoContext, args: &[String], _out: &mut dyn Write) -> Result<(), CommandError> {
         let mut subcommand: Option<String> = None;
         for a in args {
             match a.as_str() {
@@ -33,7 +33,7 @@ impl Command for MultiPackIndex {
         }
         let subcommand = subcommand.ok_or_else(|| CommandError::usage("multi-pack-index: need a subcommand (write|verify)"))?;
 
-        let repo = Repository::discover()?;
+        let repo = ctx.repository()?;
         let pack_dir = repo.common_dir.join("objects/pack");
         match subcommand.as_str() {
             "write" => write(&repo, &pack_dir),

@@ -125,6 +125,9 @@ mod tests {
             bare: false,
             hash_algo: git_hash::HashAlgorithm::Sha1,
             config: git_config::ConfigSet::new(),
+            index_file: None,
+            object_dir: None,
+            alternates: Vec::new(),
         };
         let err = user_ident(&repo, false).unwrap_err();
         assert_eq!(err.code, 128);

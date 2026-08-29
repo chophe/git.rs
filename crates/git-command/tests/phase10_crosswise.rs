@@ -8,6 +8,7 @@ use std::sync::Mutex;
 
 use git_command::Command as GitCommand;
 use git_command::apply::Apply;
+use git_command::RepoContext;
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 static CWD_LOCK: Mutex<()> = Mutex::new(());
@@ -85,7 +86,8 @@ fn apply_matches_real_git() {
     with_cwd(&dir, || {
         let args: Vec<String> = vec!["changes.patch".to_string()];
         let mut out = Vec::new();
-        Apply.run(&args, &mut out).expect("our apply")
+        let ctx = RepoContext::new();
+        Apply.run(&ctx, &args, &mut out).expect("our apply")
     });
 
     // Now apply the same patch with real git on the same base state.
@@ -104,7 +106,8 @@ fn apply_matches_real_git() {
     let check_ok = with_cwd(&dir, || {
         let args: Vec<String> = vec!["--check".to_string(), "changes.patch".to_string()];
         let mut out = Vec::new();
-        Apply.run(&args, &mut out).is_ok()
+        let ctx = RepoContext::new();
+        Apply.run(&ctx, &args, &mut out).is_ok()
     });
     assert!(check_ok, "--check should pass on a clean tree");
 

@@ -3,8 +3,7 @@
 
 use std::io::{Read, Write};
 
-use crate::{Command, CommandError};
-use git_core::Repository;
+use crate::{Command, CommandError, RepoContext};
 use git_hash::HashAlgorithm;
 use git_object::{Object, ObjectKind};
 use git_odb::LooseStore;
@@ -16,7 +15,7 @@ impl Command for HashObject {
         "hash-object"
     }
 
-    fn run(&self, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
+    fn run(&self, ctx: &RepoContext, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
         let mut write = false;
         let mut kind = ObjectKind::Blob;
         let mut stdin = false;
@@ -48,7 +47,7 @@ impl Command for HashObject {
         // The store is only needed to actually write objects; without `-w` the
         // hash is computed with SHA-1 (git's default outside a repository).
         let store = if write {
-            let repo = Repository::discover()?;
+            let repo = ctx.repository()?;
             Some(LooseStore::from_repo(&repo))
         } else {
             None
@@ -116,7 +115,7 @@ mod tests {
 
         let mut out = Vec::new();
         HashObject
-            .run(&[path.to_string_lossy().to_string()], &mut out)
+            .run(&crate::RepoContext::at(&dir), &[path.to_string_lossy().to_string()], &mut out)
             .unwrap();
         assert_eq!(
             String::from_utf8(out).unwrap().trim(),
@@ -137,7 +136,7 @@ mod tests {
         crate::tests::with_cwd(&dir, || {
             let mut out = Vec::new();
             HashObject
-                .run(&["-w".to_string(), path.to_string_lossy().to_string()], &mut out)
+                .run(&crate::RepoContext::at(&dir), &["-w".to_string(), path.to_string_lossy().to_string()], &mut out)
                 .unwrap();
 
             let oid_str = String::from_utf8(out).unwrap().trim().to_string();
@@ -156,7 +155,8 @@ mod tests {
     #[test]
     fn unknown_option_is_usage_error() {
         let mut out = Vec::new();
-        let res = HashObject.run(&["--bogus".to_string()], &mut out);
+        let ctx = crate::RepoContext::new();
+        let res = HashObject.run(&ctx, &["--bogus".to_string()], &mut out);
         assert_eq!(res.unwrap_err().code, 129);
     }
 }

@@ -2,8 +2,7 @@
 
 use std::io::Write;
 
-use crate::{Command, CommandError};
-use git_core::Repository;
+use crate::{Command, CommandError, RepoContext};
 use git_hash::Oid;
 use git_object::{parse_tree, TreeEntry};
 use git_odb::Odb;
@@ -15,7 +14,7 @@ impl Command for LsTree {
         "ls-tree"
     }
 
-    fn run(&self, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
+    fn run(&self, ctx: &RepoContext, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
         let mut recursive = false;
         let mut include_trees = false;
         let mut name_only = false;
@@ -35,7 +34,7 @@ impl Command for LsTree {
         }
         let tree_arg = tree_arg.ok_or_else(|| CommandError::usage("ls-tree: missing <tree-ish>"))?;
 
-        let repo = Repository::discover()?;
+        let repo = ctx.repository()?;
         let odb = Odb::from_repo(&repo).map_err(CommandError::from)?;
         let algo = repo.hash_algo;
         let oid = Oid::from_hex(&tree_arg, algo)

@@ -36,9 +36,24 @@ where
             println!("usage: git <command> [<args>]");
             0
         }
-        Some(cmd) => {
-            let args: Vec<String> = args.iter().skip(2).cloned().collect();
-            match git_command::dispatch(cmd, &args, &mut std::io::stdout()) {
+        Some(_) => {
+            // Parse global options (before the subcommand) from the rest.
+            let rest: Vec<String> = args.iter().skip(1).cloned().collect();
+            let (ctx, cmd_args) = match git_command::RepoContext::from_global_args(&rest) {
+                Ok(v) => v,
+                Err(e) => {
+                    if !e.message.is_empty() {
+                        eprintln!("{}", e.message);
+                    }
+                    return e.code;
+                }
+            };
+            let Some(cmd) = cmd_args.first().cloned() else {
+                eprintln!("usage: git <command> [<args>]");
+                return EXIT_USAGE;
+            };
+            let sub: Vec<String> = cmd_args.iter().skip(1).cloned().collect();
+            match git_command::dispatch_with(&ctx, &cmd, &sub, &mut std::io::stdout()) {
                 Some(Ok(())) => 0,
                 Some(Err(e)) => {
                     if !e.message.is_empty() {

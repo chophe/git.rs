@@ -8,7 +8,7 @@ use std::sync::Mutex;
 
 use git_command::Command as GitCommand;
 use git_command::{merge_base, merge_file};
-use git_command::CommandError;
+use git_command::{CommandError, RepoContext};
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 static CWD_LOCK: Mutex<()> = Mutex::new(());
@@ -49,7 +49,8 @@ fn with_cwd<R>(dir: &Path, f: impl FnOnce() -> R) -> R {
 fn ours(cmd: &dyn GitCommand, args: &[&str]) -> Result<(String, i32), CommandError> {
     let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
     let mut out = Vec::new();
-    let code = match cmd.run(&args, &mut out) {
+    let ctx = RepoContext::new();
+    let code = match cmd.run(&ctx, &args, &mut out) {
         Ok(()) => 0,
         Err(e) => e.code,
     };

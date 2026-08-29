@@ -2,8 +2,7 @@
 
 use std::io::Write;
 
-use crate::{Command, CommandError};
-use git_core::Repository;
+use crate::{Command, CommandError, RepoContext};
 use git_index::Index;
 
 pub struct LsFiles;
@@ -13,7 +12,7 @@ impl Command for LsFiles {
         "ls-files"
     }
 
-    fn run(&self, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
+    fn run(&self, ctx: &RepoContext, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
         let mut stage = false;
         for a in args {
             match a.as_str() {
@@ -25,7 +24,7 @@ impl Command for LsFiles {
                 _ => {}
             }
         }
-        let repo = Repository::discover()?;
+        let repo = ctx.repository()?;
         let algo = repo.hash_algo;
         let index = match Index::read(&repo.index_file(), algo) {
             Ok(i) => i,
