@@ -11,7 +11,7 @@ where it landed, and how it was verified. Newest entries at the bottom.
 | 2026-08-29 | A3 `cat-file --batch` / `--batch-check` / `%(format)` | DONE |
 | 2026-08-29 | A4 abbreviation resolution | DONE |
 | 2026-08-29 | A5 `rev-parse` completion | DONE (subset) |
-| 2026-08-29 | A7 pretty-printing engine | planned |
+| 2026-08-29 | A7 pretty-printing engine | DONE (core) |
 | 2026-08-29 | A6 `rev-list`/`log` options | planned |
 | 2026-08-29 | A8 diff options completion | planned |
 | 2026-08-29 | A9 userdiff hunk headers | planned |
@@ -137,9 +137,35 @@ Implemented per [05-rev-parse-completion.md](05-rev-parse-completion.md).
   fall out as the generic ambiguous-argument message).` -- noted as
   remaining Phase A follow-ups.
 
-### A7 — pretty-printing engine
+### A7 — pretty-printing engine — DONE (core)
 
 Implemented per [07-pretty-engine.md](07-pretty-engine.md).
+
+- New `git-pretty` crate: `Format` (oneline/short/medium/full/fuller/raw/
+  reference/`format:`/`tformat:` with C's parse rules), `CommitInfo`
+  parsing from raw commit bytes, `Options` (`--date=` mode, abbreviation
+  length, color, now), and the placeholder expansion engine.
+- Placeholders byte-exact vs C: `%H %h %T %t %P %p`, identity/date set
+  (`%an %ae %aN %aE %ad %aD %ar %at %ai %aI` + committer variants), body
+  handling (`%s %f %b %B %e`), `%n %% %x##`, `+`/`-`/space toggles,
+  `%G?` → 'N', and `%C(...)` color directives (emitted only when color is
+  enabled). Message bodies indent blank lines with four spaces and drop
+  trailing blank lines (`pp_remainder` parity); short format shows only
+  the subject's first line; oneline shows the full oid (C parity).
+- `--date=` modes: default/local/relative (C's exact show_date_relative
+  buckets)/iso/iso-strict/rfc/short/raw/unix/human/`format:<strftime
+  subset>` — built on A12's timezone-correct dates.
+- `log` wired to the engine: `--pretty[=X]`, `--format=X`,
+  `--date=X`, `--oneline`, `-n/--max-count`, `--skip`, `--reverse`,
+  `--no-merges`, `--first-parent`; `%h` uses A4's unique-abbreviation
+  extension; C's `fatal: invalid --pretty format` error (exit 128).
+- Deferred (recorded): `%w()` wrapping, `<()/>()` alignment,
+  `%(trailers...)`, mailmap.
+- Verification: proptests (no panic on arbitrary format strings, timestamp
+  round trip); crosswise suite `phaseA07_crosswise.rs` (registered as
+  `phaseA07-crosswise`) covering all builtin formats, ~10 user formats,
+  all deterministic date modes, and the invalid-format error;
+  full workspace green; scoreboard updated.
 
 ### A6 — `rev-list` / `log` options
 
