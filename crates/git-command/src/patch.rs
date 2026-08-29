@@ -31,6 +31,55 @@ pub fn full_hex(oid: &Option<Oid>) -> String {
     }
 }
 
+/// Compute (added, deleted) line counts for a blob change.
+pub fn change_line_counts(c: &Change, odb: &Odb) -> (usize, usize) {
+    let (old_data, new_data) = match (c.old_oid, c.new_oid) {
+        (Some(o), Some(n)) => {
+            let old = match odb.read(&o) {
+                Ok(x) => x.data,
+                Err(_) => return (0, 0),
+            };
+            let new = match odb.read(&n) {
+                Ok(x) => x.data,
+                Err(_) => return (0, 0),
+            };
+            (old, new)
+        }
+        (None, Some(n)) => (Vec::new(), match odb.read(&n) {
+            Ok(x) => x.data,
+            Err(_) => return (0, 0),
+        }),
+        (Some(o), None) => (
+            match odb.read(&o) {
+                Ok(x) => x.data,
+                Err(_) => return (0, 0),
+            },
+            Vec::new(),
+        ),
+        (None, None) => return (0, 0),
+    };
+    let a = git_diff::split_lines(&old_data);
+    let b = git_diff::split_lines(&new_data);
+    let ops = git_diff::diff_lines(&a, &b);
+    let mut adds = 0usize;
+    let mut dels = 0usize;
+    for op in ops {
+        match op {
+            git_diff::Op::Keep => {}
+            git_diff::Op::Delete => dels += 1,
+            git_diff::Op::Insert => adds += 1,
+        }
+    }
+    (adds, dels)
+}
+
+/// `--numstat` line: `adds\tdels\tpath`.
+pub fn render_numstat(c: &Change, odb: &Odb, out: &mut dyn Write) -> Result<(), CommandError> {
+    let (adds, dels) = change_line_counts(c, odb);
+    writeln!(out, "{}\t{}\t{}", adds, dels, c.path)
+        .map_err(|e| CommandError::fatal(e.to_string()))
+}
+
 /// Render a unified patch for one tree change (blob-level).
 pub fn render_change_patch(c: &Change, odb: &Odb) -> Result<Vec<u8>, CommandError> {
     let mut out = Vec::new();

@@ -19,11 +19,13 @@ impl Command for Diff {
     fn run(&self, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
         let mut no_index = false;
         let mut exit_code = false;
+        let mut numstat = false;
         let mut rest: Vec<String> = Vec::new();
         for a in args {
             match a.as_str() {
                 "--no-index" => no_index = true,
                 "--exit-code" => exit_code = true,
+                "--numstat" => numstat = true,
                 s if s.starts_with('-') && s.len() > 1 => {
                     return Err(CommandError::usage(format!("diff: option '{s}' not supported")));
                 }
@@ -60,8 +62,12 @@ impl Command for Diff {
             return Ok(());
         }
         for c in &changes {
-            let p = patch::render_change_patch(c, &odb)?;
-            out.write_all(&p).map_err(|e| CommandError::fatal(e.to_string()))?;
+            if numstat {
+                patch::render_numstat(c, &odb, out)?;
+            } else {
+                let p = patch::render_change_patch(c, &odb)?;
+                out.write_all(&p).map_err(|e| CommandError::fatal(e.to_string()))?;
+            }
         }
         // `git diff` between two trees exits 0 unless --exit-code is given.
         if exit_code {
