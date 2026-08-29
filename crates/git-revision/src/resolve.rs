@@ -120,6 +120,18 @@ impl Resolver {
         Err(unknown())
     }
 
+    /// The shortest unambiguous abbreviation length for `oid` that is at
+    /// least `min` (C git's `find_unique_abbrev`).
+    pub fn unique_abbrev_len(&self, oid: &Oid, min: usize) -> usize {
+        let hex = format!("{oid}");
+        for len in min..=hex.len() {
+            if self.find_short_oid(&hex[..len]).len() <= 1 {
+                return len;
+            }
+        }
+        hex.len()
+    }
+
     /// Look up a hex prefix among loose and packed objects.
     fn find_short_oid(&self, prefix: &str) -> Vec<Oid> {
         let mut out = Vec::new();
