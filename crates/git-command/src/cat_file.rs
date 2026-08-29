@@ -17,12 +17,15 @@ impl Command for CatFile {
 
     fn run(&self, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
         let mut action: Option<char> = None;
+        let mut batch: Option<bool> = None; // Some(true) = --batch, Some(false) = --batch-check
         let mut rest: Vec<String> = Vec::new();
         for a in args {
             match a.as_str() {
                 "-t" | "-s" | "-p" | "-e" => action = Some(a.as_bytes()[1] as char),
-                "--batch" | "--batch-check" => {
-                    return Err(CommandError::usage("cat-file: batch mode not yet implemented"));
+                "--batch" => batch = Some(true),
+                "--batch-check" => batch = Some(false),
+                "--batch-all-objects" => {
+                    return Err(CommandError::usage("cat-file: --batch-all-objects not supported"));
                 }
                 s if s.starts_with('-') && s.len() > 1 => {
                     return Err(CommandError::usage(format!("cat-file: unknown option '{s}'")));
@@ -30,10 +33,47 @@ impl Command for CatFile {
                 s => rest.push(s.to_string()),
             }
         }
-
         let repo = Repository::discover()?;
         let odb = Odb::from_repo(&repo).map_err(CommandError::from)?;
         let algo = repo.hash_algo;
+
+        // Batch modes read object names from stdin, one per line.
+        if let Some(with_contents) = batch {
+            use std::io::BufRead;
+            let stdin = std::io::stdin();
+            for line in stdin.lock().lines() {
+                let name = line.map_err(|e| CommandError::fatal(e.to_string()))?;
+                let name = name.trim().to_string();
+                if name.is_empty() {
+                    continue;
+                }
+                let resolved = git_hash::Oid::from_hex(&name, algo).ok().or_else(|| crate::resolve_arg(&repo, &name).ok());
+                match resolved.and_then(|oid| odb.read(&oid).ok().map(|obj| (oid, obj))) {
+                    Some((oid, obj)) => {
+                        // git echoes the resolved object name, not the input.
+                        if with_contents {
+                            writeln!(
+                                out,
+                                "{} {} {}",
+                                oid,
+                                obj.kind.as_str(),
+                                obj.data.len()
+                            )
+                            .map_err(|e| CommandError::fatal(e.to_string()))?;
+                            out.write_all(&obj.data).map_err(|e| CommandError::fatal(e.to_string()))?;
+                            writeln!(out).map_err(|e| CommandError::fatal(e.to_string()))?;
+                        } else {
+                            writeln!(out, "{} {} {}", oid, obj.kind.as_str(), obj.data.len())
+                                .map_err(|e| CommandError::fatal(e.to_string()))?;
+                        }
+                    }
+                    None => {
+                        writeln!(out, "{name} missing").map_err(|e| CommandError::fatal(e.to_string()))?;
+                    }
+                }
+            }
+            return Ok(());
+        }
 
         let (action, oid_s, type_arg) = match action {
             Some(a) => {
