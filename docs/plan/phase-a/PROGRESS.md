@@ -10,7 +10,7 @@ where it landed, and how it was verified. Newest entries at the bottom.
 | 2026-08-29 | A1 sha1dc collision-detecting SHA-1 | DONE |
 | 2026-08-29 | A3 `cat-file --batch` / `--batch-check` / `%(format)` | DONE |
 | 2026-08-29 | A4 abbreviation resolution | DONE |
-| 2026-08-29 | A5 `rev-parse` completion | planned |
+| 2026-08-29 | A5 `rev-parse` completion | DONE (subset) |
 | 2026-08-29 | A7 pretty-printing engine | planned |
 | 2026-08-29 | A6 `rev-list`/`log` options | planned |
 | 2026-08-29 | A8 diff options completion | planned |
@@ -117,9 +117,25 @@ Implemented per [04-abbrev-resolution.md](04-abbrev-resolution.md).
   rev:path, too-short/unknown/verify errors and a genuinely ambiguous
   prefix; full workspace tests green; scoreboard updated.
 
-### A5 — `rev-parse` completion
+### A5 — `rev-parse` completion — DONE (core subset)
 
 Implemented per [05-rev-parse-completion.md](05-rev-parse-completion.md).
+
+- Range syntax `A..B` (prints B, ^A) and `A...B` (prints B, A, ^merge-base
+  via first-parent ancestry), empty sides default to HEAD.
+- Output shaping: `--symbolic`, `--symbolic-full-name`, `--short[=n]`,
+  `--abbrev-ref` (improved), `--sq`, `--sq-quote` (C-exact quoting);
+  unrecognized options are echoed verbatim like C git's passthrough.
+- Verification: `--verify` with `--quiet` (silent exit 1) and
+  `--default=<arg>` fallback.
+- Repo shape: `--is-bare-repository`, `--is-shallow-repository`,
+  `--show-prefix` / `--show-cdup` (correct from subdirectories),
+  `--absolute-git-dir`, `--shared-index-path` (prints nothing like C in
+  plain repos), `--local-env-vars` (C's `local_repo_env` list).
+- Deferred: `--parseopt`, `@{upstream}`/`@{push}`/`@{-N}` expansions and
+  date-based `@{...}` (needs the reflog item; resolution errors currently
+  fall out as the generic ambiguous-argument message).` -- noted as
+  remaining Phase A follow-ups.
 
 ### A7 — pretty-printing engine
 

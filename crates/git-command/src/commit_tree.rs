@@ -7,7 +7,6 @@ use std::io::{Read, Write};
 use crate::{Command, CommandError, RepoContext};
 use crate::ident;
 use git_object::{Object, ObjectKind};
-use git_hash::Oid;
 use git_odb::LooseStore;
 
 pub struct CommitTree;
@@ -91,6 +90,7 @@ impl Command for CommitTree {
 
 #[cfg(test)]
 mod tests {
+    use git_hash::Oid;
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
 
