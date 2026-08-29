@@ -6,6 +6,7 @@
 //! writer (so they are unit-testable without spawning processes) and report
 //! failures through [`CommandError`].
 
+pub mod apply;
 pub mod cat_file;
 pub mod commit_graph;
 pub mod commit_tree;
@@ -176,6 +177,7 @@ pub fn dispatch(name: &str, args: &[String], out: &mut dyn Write) -> Option<Resu
         "merge-base" => &merge_base::MergeBase,
         "merge-file" => &merge_file::MergeFile,
         "fsck" => &fsck::Fsck,
+        "apply" => &apply::Apply,
         "tag" => &show_ref::Tag,
         _ => return None,
     };
