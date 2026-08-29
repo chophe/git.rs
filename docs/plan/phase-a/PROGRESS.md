@@ -8,7 +8,7 @@ where it landed, and how it was verified. Newest entries at the bottom.
 |---|---|---|
 | 2026-08-29 | A2 repo discovery / `--git-dir` / `--work-tree` | DONE |
 | 2026-08-29 | A1 sha1dc collision-detecting SHA-1 | DONE |
-| 2026-08-29 | A3 `cat-file --batch` / `--batch-check` / `%(format)` | planned |
+| 2026-08-29 | A3 `cat-file --batch` / `--batch-check` / `%(format)` | DONE |
 | 2026-08-29 | A4 abbreviation resolution | planned |
 | 2026-08-29 | A5 `rev-parse` completion | planned |
 | 2026-08-29 | A7 pretty-printing engine | planned |
@@ -76,9 +76,24 @@ Implemented per [01-sha1dc.md](01-sha1dc.md).
   vs system git; full workspace tests green; scoreboard baseline updated;
   FOLLOWUPS.md §A1 marked DONE.
 
-### A3 — `cat-file --batch` / `--batch-check` / `%(format)`
+### A3 — `cat-file --batch` / `--batch-check` / `%(format)` — DONE
 
 Implemented per [03-cat-file-batch.md](03-cat-file-batch.md).
+
+- `%(atom)` formatter: `%(objectname)`, `%(objecttype)`, `%(objectsize)`,
+  `%(objectsize:disk)`, `%(deltabase)`, `%(rest)`; unknown atoms fail like
+  C git. Default formats match `--batch` / `--batch-check`.
+- `--batch-all-objects`: sorted, deduped iteration over loose + packed OIDs.
+- `-z` (NUL-terminated records) and `--buffer` accepted; `%(rest)` splits
+  the input record at the first space only when the format uses it.
+- New `git_odb::Odb::disk_info` supplies on-disk size (loose file size or
+  packed entry span) and delta base (Ofs/Ref delta resolution).
+- `resolve_arg` gained `<rev>:<path>` support (commit → tree → path walk),
+  used by cat-file and shared with other commands.
+- Verification: crosswise suite `phaseA03_crosswise.rs` (registered as
+  `phaseA03-crosswise`) compares byte-identical output for loose and packed
+  repos, formats, `-z`, `%(rest)`, all-objects; full workspace tests green;
+  scoreboard updated.
 
 ### A4 — abbreviation resolution
 

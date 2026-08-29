@@ -296,11 +296,53 @@ pub trait Command {
     fn run(&self, ctx: &RepoContext, args: &[String], out: &mut dyn Write) -> Result<(), CommandError>;
 }
 
-/// Resolve a revision argument: a full hex oid, or a ref name (e.g. `HEAD`,
-/// `refs/heads/main`, `main`).
+/// Resolve a revision argument: a full hex oid, a ref name (e.g. `HEAD`,
+/// `refs/heads/main`, `main`), or `<rev>:<path>` (object at `path` inside
+/// the tree of `rev`).
 pub fn resolve_arg(repo: &Repository, s: &str) -> Result<git_hash::Oid, CommandError> {
     if let Ok(oid) = git_hash::Oid::from_hex(s, repo.hash_algo) {
         return Ok(oid);
+    }
+    if let Some((rev, path)) = s.split_once(':') {
+        if !path.is_empty() {
+            let rev_oid = resolve_arg(repo, rev)?;
+            let odb = git_odb::Odb::from_repo(repo).map_err(CommandError::from)?;
+            let mut obj = odb.read(&rev_oid).map_err(|_| {
+                CommandError::error(format!("Not a valid object name '{rev}'"))
+            })?;
+            // Dereference commits to their tree; tags are not followed yet.
+            if obj.kind == git_object::ObjectKind::Commit {
+                let line = obj.data.iter().position(|&b| b == b'\n').unwrap_or(0);
+                let head = String::from_utf8_lossy(&obj.data[..line]);
+                let tree_hex = head
+                    .strip_prefix("tree ")
+                    .ok_or_else(|| CommandError::error("bad commit object"))?;
+                let tree_oid = git_hash::Oid::from_hex(tree_hex, repo.hash_algo)
+                    .map_err(|_| CommandError::error("bad commit object"))?;
+                obj = odb.read(&tree_oid).map_err(CommandError::from)?;
+            }
+            let mut cur = obj;
+            let parts: Vec<&str> = path.split('/').filter(|p| !p.is_empty()).collect();
+            for (i, part) in parts.iter().enumerate() {
+                if cur.kind != git_object::ObjectKind::Tree {
+                    return Err(CommandError::error(format!(
+                        "Not a valid object name '{s}'"
+                    )));
+                }
+                let entries = git_object::parse_tree(&cur.data, repo.hash_algo)
+                    .map_err(|_| CommandError::error(format!("Not a valid object name '{s}'")))?;
+                let entry = entries
+                    .iter()
+                    .find(|e| String::from_utf8_lossy(&e.name) == *part)
+                    .ok_or_else(|| {
+                        CommandError::error(format!("Not a valid object name '{s}'"))
+                    })?;
+                if i + 1 == parts.len() {
+                    return Ok(entry.oid.clone());
+                }
+                cur = odb.read(&entry.oid).map_err(CommandError::from)?;
+            }
+        }
     }
     // `main` may abbreviate `refs/heads/main`.
     let candidates = [

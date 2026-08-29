@@ -8,7 +8,7 @@ pub mod index;
 pub mod midx;
 pub mod write;
 
-pub use file::PackFile;
+pub use file::{EntryKind, PackFile};
 pub use index::PackIndex;
 pub use midx::{Midx, MidxError};
 pub use write::{write_idx, write_pack, PackObject};
@@ -169,6 +169,56 @@ impl Odb {
 
     pub fn algorithm(&self) -> HashAlgorithm {
         self.loose.algorithm()
+    }
+
+    /// On-disk footprint and delta base (if any) of `oid`: for loose objects
+    /// the loose file size and no base; for packed objects the packed entry
+    /// span and the delta base when the entry is a delta.
+    pub fn disk_info(&self, oid: &Oid) -> Option<(u64, Option<Oid>)> {
+        let loose_path = self.loose.oid_path(oid);
+        if let Ok(meta) = std::fs::metadata(&loose_path) {
+            return Some((meta.len(), None));
+        }
+        for (pf, idx) in &self.packs {
+            let Some(offset) = idx.find(oid) else {
+                continue;
+            };
+            let mut offsets: Vec<u64> = Vec::with_capacity(idx.len());
+            for i in 0..idx.len() {
+                if let Ok(off) = idx.offset_at(i) {
+                    offsets.push(off);
+                }
+            }
+            offsets.sort_unstable();
+            offsets.dedup();
+            let disk = match offsets.binary_search(&offset) {
+                Ok(i) => {
+                    if i + 1 < offsets.len() {
+                        offsets[i + 1] - offset
+                    } else {
+                        (pf.data_end() as u64).saturating_sub(offset)
+                    }
+                }
+                Err(_) => 0,
+            };
+            let base = pf
+                .entry_at(offset as usize)
+                .ok()
+                .and_then(|entry| match entry.kind {
+                    EntryKind::OfsDelta => entry.base_offset.and_then(|base_off| {
+                        (0..idx.len()).find_map(|i| {
+                            match idx.offset_at(i) {
+                                Ok(off) if off == base_off => Some(idx.oid_at(i).clone()),
+                                _ => None,
+                            }
+                        })
+                    }),
+                    EntryKind::RefDelta => entry.base_oid.clone(),
+                    EntryKind::Base(_) => None,
+                });
+            return Some((disk, base));
+        }
+        None
     }
 
     pub fn contains(&self, oid: &Oid) -> bool {
