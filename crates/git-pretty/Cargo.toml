@@ -1,0 +1,14 @@
+[package]
+name = "git-pretty"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Commit formatting engine (pretty.c port)"
+
+[dependencies]
+git-hash = { path = "../git-hash" }
+git-date = { path = "../git-date" }
+
+[dev-dependencies]
+proptest = "1"

@@ -126,6 +126,7 @@ dependencies = [
  "git-merge",
  "git-object",
  "git-odb",
+ "git-pretty",
  "git-refs",
  "git-revision",
 ]
@@ -204,6 +205,15 @@ dependencies = [
  "git-core",
  "git-hash",
  "git-object",
+ "proptest",
+]
+
+[[package]]
+name = "git-pretty"
+version = "0.1.0"
+dependencies = [
+ "git-date",
+ "git-hash",
  "proptest",
 ]
 

@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "git-hash",
     "git-varint",
+    "git-pretty",
     "git-date",
     "git-config",
     "git-core",
