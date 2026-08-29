@@ -114,13 +114,55 @@ impl Command for Branch {
     }
 
     fn run(&self, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
+        let repo = Repository::discover()?;
+        let store = git_refs::RefStore::from_repo(&repo);
+        let algo = repo.hash_algo;
+
+        let mut delete = false;
+        let mut rest: Vec<String> = Vec::new();
         for a in args {
             match a.as_str() {
                 "-l" | "--list" | "-a" | "-r" => {}
-                _ => return Err(CommandError::usage(format!("branch: option '{a}' not supported"))),
+                "-d" | "-D" => delete = true,
+                s if s.starts_with('-') && s.len() > 1 => {
+                    return Err(CommandError::usage(format!("branch: option '{s}' not supported")));
+                }
+                s => rest.push(s.to_string()),
             }
         }
-        list_short(out, "refs/heads/", true)
+
+        if delete {
+            if rest.len() != 1 {
+                return Err(CommandError::usage("branch -d: requires <branchname>"));
+            }
+            let name = rest[0].trim_start_matches("refs/heads/").to_string();
+            let full = format!("refs/heads/{name}");
+            // Refuse to delete the checked-out branch.
+            if store.head_symbolic_target().as_deref() == Some(full.as_str()) {
+                return Err(CommandError::error(format!(
+                    "error: cannot delete branch '{name}' used by worktree"
+                )));
+            }
+            store
+                .update(&full, None)
+                .map_err(|e| CommandError::fatal(e.to_string()))?;
+            return Ok(());
+        }
+
+        if rest.is_empty() {
+            return list_short(out, "refs/heads/", true);
+        }
+        if rest.len() != 1 {
+            return Err(CommandError::usage("branch: too many arguments"));
+        }
+        // Create: refs/heads/<name> at HEAD.
+        let head = repo.resolve_head().ok_or_else(|| CommandError::error("not a valid object name: 'HEAD'"))?;
+        let name = rest[0].trim_start_matches("refs/heads/").to_string();
+        store
+            .update(&format!("refs/heads/{name}"), Some(&head))
+            .map_err(|e| CommandError::fatal(e.to_string()))?;
+        let _ = algo;
+        Ok(())
     }
 }
 
@@ -132,12 +174,49 @@ impl Command for Tag {
     }
 
     fn run(&self, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
+        let repo = Repository::discover()?;
+        let store = git_refs::RefStore::from_repo(&repo);
+        let algo = repo.hash_algo;
+
+        let mut delete = false;
+        let mut rest: Vec<String> = Vec::new();
         for a in args {
             match a.as_str() {
                 "-l" | "--list" => {}
-                _ => return Err(CommandError::usage(format!("tag: option '{a}' not supported"))),
+                "-d" => delete = true,
+                s if s.starts_with('-') && s.len() > 1 => {
+                    return Err(CommandError::usage(format!("tag: option '{s}' not supported")));
+                }
+                s => rest.push(s.to_string()),
             }
         }
-        list_short(out, "refs/tags/", false)
+
+        if delete {
+            if rest.len() != 1 {
+                return Err(CommandError::usage("tag -d: requires <tagname>"));
+            }
+            let name = rest[0].trim_start_matches("refs/tags/").to_string();
+            store
+                .update(&format!("refs/tags/{name}"), None)
+                .map_err(|e| CommandError::fatal(e.to_string()))?;
+            return Ok(());
+        }
+
+        if rest.is_empty() {
+            return list_short(out, "refs/tags/", false);
+        }
+        // Create: lightweight tag at HEAD (or the given object).
+        let target = if rest.len() > 1 {
+            crate::resolve_arg(&repo, &rest[1])?
+        } else {
+            repo.resolve_head()
+                .ok_or_else(|| CommandError::error("failed to resolve 'HEAD' as a valid ref"))?
+        };
+        let name = rest[0].trim_start_matches("refs/tags/").to_string();
+        store
+            .update(&format!("refs/tags/{name}"), Some(&target))
+            .map_err(|e| CommandError::fatal(e.to_string()))?;
+        let _ = algo;
+        Ok(())
     }
 }
