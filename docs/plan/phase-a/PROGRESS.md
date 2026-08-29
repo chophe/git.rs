@@ -15,7 +15,7 @@ where it landed, and how it was verified. Newest entries at the bottom.
 | 2026-08-29 | A6 `rev-list`/`log` options | planned |
 | 2026-08-29 | A8 diff options completion | planned |
 | 2026-08-29 | A9 userdiff hunk headers | planned |
-| 2026-08-29 | A10 `count-objects -v` close-out | planned |
+| 2026-08-29 | A10 `count-objects -v` close-out | DONE |
 | 2026-08-29 | A11 `.gitignore` + attributes engine | planned |
 | 2026-08-29 | A12 local timezone dates/idents | DONE (core) |
 | 2026-08-29 | A13 pack delta compression on write | planned |
@@ -153,9 +153,26 @@ Implemented per [08-diff-options.md](08-diff-options.md).
 
 Implemented per [09-userdiff-hunk-headers.md](09-userdiff-hunk-headers.md).
 
-### A10 — `count-objects -v` close-out
+### A10 — `count-objects -v` close-out — DONE
 
-Verified per [10-count-objects-v.md](10-count-objects-v.md).
+Verified per [10-count-objects-v.md](10-count-objects-v.md); crosswise
+check found divergences and they were fixed:
+
+- Garbage semantics now match C git exactly: fanout-dir cruft and
+  pack-dir files grouped by basename (pack+idx complete = clean; missing
+  one → `no corresponding .idx/.pack`), `multi-pack-index*` skipped,
+  unknown extensions → `garbage found`, `warning:` lines on stderr with
+  C git's path rendering.
+- `size-garbage`/`size`/`size-pack` accumulate real byte sizes
+  (`st_size` for garbage, `st_blocks * 512` for loose) and divide by 1024
+  once, like C.
+- Plain (non-verbose) mode prints `N objects, N kilobytes`.
+- Added `-H`/`--human-readable` (C git's `humanise_bytes` formatting) and
+  the usage error block for extra arguments (exit 129).
+- Verification: crosswise suite `phaseA10_crosswise.rs` (registered as
+  `phaseA10-crosswise`) with a fixture containing loose objects, a pack,
+  prune-packable duplicates and planted garbage; byte-identical for `-v`,
+  `-v -H`, and plain invocations.
 
 ### A11 — `.gitignore` + attributes engine
 

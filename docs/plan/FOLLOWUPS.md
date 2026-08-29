@@ -28,7 +28,10 @@ tested.
 4. **Pack delta compression in `pack-objects`** — **NOT DONE**
    - `write_pack` still stores objects non-deltified.
 
-5. **`git count-objects -v` size fields** — **DONE** (`count_objects.rs`)
+5. **DONE (A10, re-verified)** — `git count-objects -v` size fields and
+   garbage semantics (fanout cruft + pack-dir pairing, `st_size`-based
+   size-garbage, `-H` human-readable, plain-mode output) are byte-identical
+   to C git per `phaseA10_crosswise.rs`.
    - `size` = loose `st_blocks*512/1024`; `size-pack` = `(.pack+.idx bytes)/1024`;
      `prune-packable` (loose also in a pack); `garbage`/`size-garbage`
      (unrecognized files in `objects/pack`). Crosswise-verified.
