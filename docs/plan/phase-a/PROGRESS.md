@@ -9,7 +9,7 @@ where it landed, and how it was verified. Newest entries at the bottom.
 | 2026-08-29 | A2 repo discovery / `--git-dir` / `--work-tree` | DONE |
 | 2026-08-29 | A1 sha1dc collision-detecting SHA-1 | DONE |
 | 2026-08-29 | A3 `cat-file --batch` / `--batch-check` / `%(format)` | DONE |
-| 2026-08-29 | A4 abbreviation resolution | planned |
+| 2026-08-29 | A4 abbreviation resolution | DONE |
 | 2026-08-29 | A5 `rev-parse` completion | planned |
 | 2026-08-29 | A7 pretty-printing engine | planned |
 | 2026-08-29 | A6 `rev-list`/`log` options | planned |
@@ -95,9 +95,27 @@ Implemented per [03-cat-file-batch.md](03-cat-file-batch.md).
   repos, formats, `-z`, `%(rest)`, all-objects; full workspace tests green;
   scoreboard updated.
 
-### A4 — abbreviation resolution
+### A4 — abbreviation resolution — DONE
 
 Implemented per [04-abbrev-resolution.md](04-abbrev-resolution.md).
+
+- `git_revision::Resolver` (`crates/git-revision/src/resolve.rs`): full hex
+  → refname candidates → abbreviated hex (>=4 chars) over loose fanout dirs
+  and sorted pack indexes; ambiguity error reproduces C git's exact text
+  (`error: short object ID <pfx> is ambiguous` + the generic
+  ambiguous-argument die, exit 128).
+- `<rev>~<n>` / `<rev>^<n>` peels and `<rev>:<path>` tree walks; `HEAD~0`
+  parity confirmed.
+- `git-command::resolve_arg` delegates to the resolver, so `rev-list`,
+  `log`, `commit-tree` (full-length requirement dropped, FOLLOWUPS closed)
+  and friends share one resolution path with byte-identical diagnostics;
+  `rev-parse` echoes unresolved args like C git.
+- `git-cli` now buffers stdout so stdout/stderr ordering matches C git when
+  streams are merged.
+- Verification: crosswise suite `phaseA04_crosswise.rs` (registered as
+  `phaseA04-crosswise`) covering abbreviations at many lengths, peels,
+  rev:path, too-short/unknown/verify errors and a genuinely ambiguous
+  prefix; full workspace tests green; scoreboard updated.
 
 ### A5 — `rev-parse` completion
 

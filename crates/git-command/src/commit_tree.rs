@@ -6,8 +6,8 @@ use std::io::{Read, Write};
 
 use crate::{Command, CommandError, RepoContext};
 use crate::ident;
-use git_hash::Oid;
 use git_object::{Object, ObjectKind};
+use git_hash::Oid;
 use git_odb::LooseStore;
 
 pub struct CommitTree;
@@ -57,13 +57,10 @@ impl Command for CommitTree {
         }
 
         let tree = tree.ok_or_else(|| CommandError::usage("commit-tree: missing <tree> argument"))?;
-        let tree_oid = Oid::from_hex(&tree, repo.hash_algo)
-            .map_err(|_| CommandError::error(format!("not a valid object name: '{tree}'")))?;
+        let tree_oid = crate::resolve_arg(&repo, &tree)?;
         let mut parent_oids = Vec::with_capacity(parents.len());
         for p in &parents {
-            let oid = Oid::from_hex(p, repo.hash_algo)
-                .map_err(|_| CommandError::error(format!("not a valid object name: '{p}'")))?;
-            parent_oids.push(oid);
+            parent_oids.push(crate::resolve_arg(&repo, p)?);
         }
 
         let message = if messages.is_empty() {

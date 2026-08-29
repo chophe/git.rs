@@ -4,6 +4,9 @@
 //! following first parents (with optional full-parent traversal), producing
 //! commit oids in insertion (date-ish) order. Used by `rev-list` and `log`.
 
+pub mod resolve;
+pub use resolve::{ResolveError, Resolver};
+
 use std::collections::{HashSet, VecDeque};
 
 use git_hash::Oid;

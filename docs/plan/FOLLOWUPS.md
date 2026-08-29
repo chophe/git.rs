@@ -97,8 +97,9 @@ All defined in `docs/plan/test-infrastructure.md`; none implemented yet:
   a shared `RepoContext` threads `--git-dir`/`--work-tree`/`--bare`/`-C`/`-c`
   CLI overrides and `GIT_*` env vars through every command
   (see `phase-a/02-repo-discovery-env.md` and `phase-a/PROGRESS.md`).
-- **`commit-tree`** requires full-length object ids for tree/parents (no
-  abbreviation resolution yet; that needs `rev-parse`/refs, Phase 7).
+- **DONE (A4)** — `commit-tree` now resolves tree/parent arguments through
+  the shared `git_revision::Resolver` (abbreviated oids, `~`/`^` peels,
+  `<rev>:<path>`), with C git's ambiguity diagnostics.
 
 ## D. Phase status
 

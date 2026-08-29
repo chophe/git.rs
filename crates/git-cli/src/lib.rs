@@ -53,8 +53,12 @@ where
                 return EXIT_USAGE;
             };
             let sub: Vec<String> = cmd_args.iter().skip(1).cloned().collect();
-            match git_command::dispatch_with(&ctx, &cmd, &sub, &mut std::io::stdout()) {
-                Some(Ok(())) => 0,
+            let mut stdout = std::io::BufWriter::new(std::io::stdout());
+            match git_command::dispatch_with(&ctx, &cmd, &sub, &mut stdout) {
+                Some(Ok(())) => {
+                    let _ = std::io::Write::flush(&mut stdout);
+                    0
+                }
                 Some(Err(e)) => {
                     if !e.message.is_empty() {
                         eprintln!("{}", e.message);

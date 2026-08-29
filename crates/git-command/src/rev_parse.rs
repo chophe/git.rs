@@ -3,7 +3,6 @@
 use std::io::Write;
 
 use crate::{Command, CommandError, RepoContext};
-use git_hash::Oid;
 use git_refs::RefStore;
 
 pub struct RevParse;
@@ -16,7 +15,7 @@ impl Command for RevParse {
     fn run(&self, ctx: &RepoContext, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
         let repo = ctx.repository()?;
         let store = RefStore::from_repo(&repo);
-        let algo = repo.hash_algo;
+        let _algo = repo.hash_algo;
 
         let mut verify = false;
         let mut short = false;
@@ -80,14 +79,18 @@ impl Command for RevParse {
                 continue;
             }
 
-            let resolved = Oid::from_hex(arg, algo).ok().or_else(|| store.resolve(arg));
-            let oid = match resolved {
-                Some(oid) => oid,
-                None => {
+            let oid = match crate::resolve_arg(&repo, arg) {
+                Ok(oid) => oid,
+                Err(_) => {
                     if verify {
-                        return Err(CommandError::error("fatal: Needed a single revision"));
+                        return Err(CommandError::fatal("fatal: Needed a single revision"));
                     }
-                    return Err(CommandError::error(format!("{arg}: unknown revision")));
+                    // C git echoes the unresolved argument to stdout before
+                    // dying with the ambiguous-argument message.
+                    writeln!(out, "{arg}").map_err(|e| CommandError::fatal(e.to_string()))?;
+                    return Err(CommandError::fatal(
+                        crate::revision_error_text(arg),
+                    ));
                 }
             };
             if short {

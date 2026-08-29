@@ -219,8 +219,11 @@ dependencies = [
 name = "git-revision"
 version = "0.1.0"
 dependencies = [
+ "git-core",
  "git-hash",
  "git-object",
+ "git-odb",
+ "git-refs",
 ]
 
 [[package]]
