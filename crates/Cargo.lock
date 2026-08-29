@@ -234,6 +234,7 @@ dependencies = [
  "git-object",
  "git-odb",
  "git-refs",
+ "proptest",
 ]
 
 [[package]]

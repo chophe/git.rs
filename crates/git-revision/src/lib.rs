@@ -5,6 +5,7 @@
 //! commit oids in insertion (date-ish) order. Used by `rev-list` and `log`.
 
 pub mod resolve;
+pub mod rev_info;
 pub use resolve::{ResolveError, Resolver};
 
 use std::collections::{HashSet, VecDeque};
