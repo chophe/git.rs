@@ -18,11 +18,13 @@ impl Command for MergeBase {
 
     fn run(&self, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
         let mut all = false;
+        let mut is_ancestor = false;
         let mut rest: Vec<String> = Vec::new();
         for a in args {
             match a.as_str() {
                 "--all" => all = true,
-                "--octopus" | "--independent" | "--is-ancestor" => {
+                "--is-ancestor" => is_ancestor = true,
+                "--octopus" | "--independent" => {
                     return Err(CommandError::usage(format!("merge-base: option '{a}' not supported")));
                 }
                 s if s.starts_with('-') && s.len() > 1 => {
@@ -49,11 +51,21 @@ impl Command for MergeBase {
                 .map(|c| c.parents)
                 .unwrap_or_default()
         };
+
+        // `--is-ancestor A B`: exit 0 when A is an ancestor of B (or equal),
+        // i.e. A is reachable from B.
+        if is_ancestor {
+            let ancestors = git_merge::reachable(&b, &mut loader);
+            if ancestors.contains(&a) {
+                return Ok(());
+            }
+            return Err(CommandError::silent(1));
+        }
+
         let bases = merge_bases(&a, &b, &mut loader);
         if bases.is_empty() {
             return Err(CommandError::error("fatal: no merge base found"));
         }
-        let _ = algo;
         if all {
             let mut sorted = bases;
             sorted.sort();
