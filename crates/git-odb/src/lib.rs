@@ -24,6 +24,12 @@ pub mod pack;
 
 pub use pack::{Odb, PackError};
 
+/// The loose-object path for `oid` rooted at `objects_dir`.
+fn loose_path(objects_dir: &std::path::Path, oid: &Oid) -> PathBuf {
+    let hex = format!("{oid}");
+    objects_dir.join(&hex[..2]).join(&hex[2..])
+}
+
 static TEMP_COUNTER: AtomicU32 = AtomicU32::new(0);
 
 /// Errors returned by the object store.
@@ -57,17 +63,40 @@ impl From<ObjectError> for OdbError {
 pub struct LooseStore {
     objects_dir: PathBuf,
     algo: HashAlgorithm,
+    /// Extra object search directories (alternates); reads fall back to them.
+    alternates: Vec<PathBuf>,
 }
 
 impl LooseStore {
     /// Create a store rooted at `objects_dir` hashing with `algo`.
     pub fn new(objects_dir: PathBuf, algo: HashAlgorithm) -> LooseStore {
-        LooseStore { objects_dir, algo }
+        LooseStore { objects_dir, algo, alternates: Vec::new() }
     }
 
-    /// Create a store for the given repository (its common dir + hash algo).
+    /// Create a store for the given repository, honoring the
+    /// `GIT_OBJECT_DIRECTORY` override, `GIT_ALTERNATE_OBJECT_DIRECTORIES`,
+    /// and the `objects/info/alternates` file.
     pub fn from_repo(repo: &Repository) -> LooseStore {
-        LooseStore::new(repo.common_dir.join("objects"), repo.hash_algo)
+        let primary = repo
+            .object_dir
+            .clone()
+            .unwrap_or_else(|| repo.common_dir.join("objects"));
+        let mut alternates = repo.alternates.clone();
+        if let Ok(content) = std::fs::read_to_string(primary.join("info/alternates")) {
+            for line in content.lines() {
+                let line = line.trim();
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
+                let p = PathBuf::from(line);
+                alternates.push(if p.is_absolute() {
+                    p
+                } else {
+                    primary.join(p)
+                });
+            }
+        }
+        LooseStore { objects_dir: primary, algo: repo.hash_algo, alternates }
     }
 
     /// The hash algorithm this store writes with.
@@ -86,28 +115,37 @@ impl LooseStore {
         &self.objects_dir
     }
 
+    /// The alternate object directories this store falls back to on reads.
+    pub fn alternates(&self) -> &[std::path::PathBuf] {
+        &self.alternates
+    }
+
     /// The number of loose objects present on disk.
     pub fn object_count(&self) -> usize {
         self.iter_oids().len()
     }
 
-    /// The object ids of all loose objects on disk.
+    /// The object ids of all loose objects on disk (including alternates).
     pub fn iter_oids(&self) -> Vec<Oid> {
         let mut out = Vec::new();
-        if let Ok(rd) = std::fs::read_dir(&self.objects_dir) {
-            for e in rd.flatten() {
-                let dname = e.file_name().to_string_lossy().into_owned();
-                if e.path().is_dir()
-                    && dname.len() == 2
-                    && dname.bytes().all(|b| b.is_ascii_hexdigit())
-                {
-                    if let Ok(sub) = std::fs::read_dir(e.path()) {
-                        for f in sub.flatten() {
-                            let fname = f.file_name().to_string_lossy().into_owned();
-                            let want = self.algo.hex_len() - 2;
-                            if f.path().is_file() && fname.len() == want {
-                                if let Ok(oid) = Oid::from_hex(&format!("{dname}{fname}"), self.algo) {
-                                    out.push(oid);
+        let mut dirs: Vec<&PathBuf> = vec![&self.objects_dir];
+        dirs.extend(self.alternates.iter());
+        for dir in dirs {
+            if let Ok(rd) = std::fs::read_dir(dir) {
+                for e in rd.flatten() {
+                    let dname = e.file_name().to_string_lossy().into_owned();
+                    if e.path().is_dir()
+                        && dname.len() == 2
+                        && dname.bytes().all(|b| b.is_ascii_hexdigit())
+                    {
+                        if let Ok(sub) = std::fs::read_dir(e.path()) {
+                            for f in sub.flatten() {
+                                let fname = f.file_name().to_string_lossy().into_owned();
+                                let want = self.algo.hex_len() - 2;
+                                if f.path().is_file() && fname.len() == want {
+                                    if let Ok(oid) = Oid::from_hex(&format!("{dname}{fname}"), self.algo) {
+                                        out.push(oid);
+                                    }
                                 }
                             }
                         }
@@ -118,9 +156,13 @@ impl LooseStore {
         out
     }
 
-    /// Whether an object exists as a loose object.
+    /// Whether an object exists as a loose object (primary or alternates).
     pub fn contains(&self, oid: &Oid) -> bool {
         self.oid_path(oid).is_file()
+            || self
+                .alternates
+                .iter()
+                .any(|dir| loose_path(dir, oid).is_file())
     }
 
     /// Read a full object.
@@ -177,7 +219,14 @@ impl LooseStore {
     /// Inflate and return the raw serialized bytes of a loose object.
     fn read_raw(&self, oid: &Oid) -> Result<Vec<u8>, OdbError> {
         let path = self.oid_path(oid);
-        let file = std::fs::File::open(&path).map_err(|_| OdbError::NotFound)?;
+        let file = std::fs::File::open(&path)
+            .or_else(|_| {
+                self.alternates
+                    .iter()
+                    .find_map(|dir| std::fs::File::open(loose_path(dir, oid)).ok())
+                    .ok_or(OdbError::NotFound)
+            })
+            .map_err(|_| OdbError::NotFound)?;
         let mut decoder = ZlibDecoder::new(file);
         let mut out = Vec::new();
         decoder

@@ -217,6 +217,9 @@ fn odb_reads_from_real_pack() {
         bare: false,
         hash_algo: algo,
         config: git_config::ConfigSet::new(),
+        index_file: None,
+        object_dir: None,
+        alternates: Vec::new(),
     };
     let odb = Odb::from_repo(&repo).unwrap();
     for oid_s in &oids {

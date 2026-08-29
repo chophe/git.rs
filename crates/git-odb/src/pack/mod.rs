@@ -130,27 +130,35 @@ pub struct Odb {
 }
 
 impl Odb {
-    /// Open the object database for a repository, discovering its pack files.
+    /// Open the object database for a repository, discovering its pack files
+    /// (including `GIT_OBJECT_DIRECTORY`, alternates, and `info/alternates`).
     pub fn from_repo(repo: &Repository) -> Result<Odb, PackError> {
         let loose = LooseStore::from_repo(repo);
         let mut packs = Vec::new();
-        let pack_dir = repo.common_dir.join("objects/pack");
-        if let Ok(rd) = std::fs::read_dir(&pack_dir) {
-            for e in rd.flatten() {
-                let p = e.path();
-                if p.extension().and_then(|x| x.to_str()) == Some("idx") {
-                    let idx_data = match std::fs::read(&p) {
-                        Ok(d) => d,
-                        Err(_) => continue,
-                    };
-                    let idx = match index::PackIndex::parse(&idx_data, repo.hash_algo) {
-                        Ok(i) => i,
-                        Err(_) => continue,
-                    };
-                    let pack_path = p.with_extension("pack");
-                    if let Ok(pdata) = std::fs::read(&pack_path) {
-                        if let Ok(pf) = file::PackFile::from_bytes(pdata, repo.hash_algo) {
-                            packs.push((pf, idx));
+        let mut pack_dirs = vec![loose.objects_dir().join("pack")];
+        pack_dirs.extend(loose.alternates().iter().map(|d| d.join("pack")));
+        let mut seen = std::collections::HashSet::new();
+        for pack_dir in pack_dirs {
+            if !seen.insert(pack_dir.clone()) {
+                continue;
+            }
+            if let Ok(rd) = std::fs::read_dir(&pack_dir) {
+                for e in rd.flatten() {
+                    let p = e.path();
+                    if p.extension().and_then(|x| x.to_str()) == Some("idx") {
+                        let idx_data = match std::fs::read(&p) {
+                            Ok(d) => d,
+                            Err(_) => continue,
+                        };
+                        let idx = match index::PackIndex::parse(&idx_data, repo.hash_algo) {
+                            Ok(i) => i,
+                            Err(_) => continue,
+                        };
+                        let pack_path = p.with_extension("pack");
+                        if let Ok(pdata) = std::fs::read(&pack_path) {
+                            if let Ok(pf) = file::PackFile::from_bytes(pdata, repo.hash_algo) {
+                                packs.push((pf, idx));
+                            }
                         }
                     }
                 }
