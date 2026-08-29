@@ -12,7 +12,7 @@ SYSTEM_GIT="${SYSTEM_GIT:-/usr/bin/git}"
 CMD="${1:-}"
 
 case "$CMD" in
-	version|hash-object|commit-tree|verify-pack|unpack-objects|pack-objects|count-objects|multi-pack-index|commit-graph|cat-file|ls-tree|mktree|rev-list|log|diff-tree|diff|ls-files|update-index|status|rev-parse|show-ref|for-each-ref|update-ref|symbolic-ref|branch|tag|merge-base|merge-file|fsck)
+	version|hash-object|commit-tree|verify-pack|unpack-objects|pack-objects|count-objects|multi-pack-index|commit-graph|cat-file|ls-tree|mktree|rev-list|log|diff-tree|diff|ls-files|update-index|status|rev-parse|show-ref|for-each-ref|update-ref|symbolic-ref|branch|tag|merge-base|merge-file|fsck|apply)
 		exec "$RUST_GIT" "$@"
 		;;
 	*)
