@@ -49,16 +49,33 @@ pub struct RepoEnv {
     pub git_dir: Option<PathBuf>,
     pub work_tree: Option<PathBuf>,
     pub common_dir: Option<PathBuf>,
+    /// `GIT_INDEX_FILE`: alternate index file path.
+    pub index_file: Option<PathBuf>,
+    /// `GIT_OBJECT_DIRECTORY`: alternate objects directory.
+    pub object_dir: Option<PathBuf>,
+    /// `GIT_ALTERNATE_OBJECT_DIRECTORIES`: extra object search directories.
+    pub alternates: Vec<PathBuf>,
 }
 
 impl RepoEnv {
     /// Read the standard `GIT_DIR`, `GIT_WORK_TREE`, and `GIT_COMMON_DIR`
-    /// environment variables.
+    /// environment variables (plus `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`,
+    /// and `GIT_ALTERNATE_OBJECT_DIRECTORIES`).
     pub fn from_env() -> RepoEnv {
+        let alternates = std::env::var_os("GIT_ALTERNATE_OBJECT_DIRECTORIES")
+            .map(|v| {
+                std::env::split_paths(&v)
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
         RepoEnv {
             git_dir: std::env::var_os("GIT_DIR").map(PathBuf::from),
             work_tree: std::env::var_os("GIT_WORK_TREE").map(PathBuf::from),
             common_dir: std::env::var_os("GIT_COMMON_DIR").map(PathBuf::from),
+            index_file: std::env::var_os("GIT_INDEX_FILE").map(PathBuf::from),
+            object_dir: std::env::var_os("GIT_OBJECT_DIRECTORY").map(PathBuf::from),
+            alternates,
         }
     }
 }
@@ -79,6 +96,12 @@ pub struct Repository {
     pub hash_algo: HashAlgorithm,
     /// The merged repository configuration.
     pub config: ConfigSet,
+    /// Index file override (`GIT_INDEX_FILE`), if any.
+    pub index_file: Option<PathBuf>,
+    /// Objects directory override (`GIT_OBJECT_DIRECTORY`), if any.
+    pub object_dir: Option<PathBuf>,
+    /// Extra object search directories (`GIT_ALTERNATE_OBJECT_DIRECTORIES`).
+    pub alternates: Vec<PathBuf>,
 }
 
 impl Repository {
@@ -116,6 +139,16 @@ impl Repository {
             None => git_dir.parent().map(|p| p.to_path_buf()),
         };
 
+        let object_dir = env
+            .object_dir
+            .as_ref()
+            .map(|d| make_absolute(&git_dir, d));
+        let alternates = env
+            .alternates
+            .iter()
+            .map(|d| make_absolute(&git_dir, d))
+            .collect();
+
         Ok(Repository {
             git_dir,
             common_dir,
@@ -123,6 +156,9 @@ impl Repository {
             bare,
             hash_algo,
             config,
+            index_file: env.index_file.clone(),
+            object_dir,
+            alternates,
         })
     }
 
@@ -242,6 +278,9 @@ mod tests {
             git_dir: Some(git_dir.clone()),
             work_tree: None,
             common_dir: None,
+            index_file: None,
+            object_dir: None,
+            alternates: Vec::new(),
         };
         let repo = Repository::discover_from(&base, &env).unwrap();
         assert_eq!(repo.git_dir, git_dir);
@@ -322,7 +361,9 @@ impl Repository {
 
     /// The path of the index file.
     pub fn index_file(&self) -> PathBuf {
-        self.git_dir.join("index")
+        self.index_file
+            .clone()
+            .unwrap_or_else(|| self.git_dir.join("index"))
     }
 
     /// Resolve `HEAD` to a commit id by reading the ref file (loose refs only).
