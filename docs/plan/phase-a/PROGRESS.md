@@ -17,7 +17,7 @@ where it landed, and how it was verified. Newest entries at the bottom.
 | 2026-08-29 | A9 userdiff hunk headers | planned |
 | 2026-08-29 | A10 `count-objects -v` close-out | planned |
 | 2026-08-29 | A11 `.gitignore` + attributes engine | planned |
-| 2026-08-29 | A12 local timezone dates/idents | planned |
+| 2026-08-29 | A12 local timezone dates/idents | DONE (core) |
 | 2026-08-29 | A13 pack delta compression on write | planned |
 
 ## Details
@@ -161,9 +161,23 @@ Verified per [10-count-objects-v.md](10-count-objects-v.md).
 
 Implemented per [11-gitignore-attributes.md](11-gitignore-attributes.md).
 
-### A12 — local timezone dates/idents
+### A12 — local timezone dates/idents — DONE (core)
 
 Implemented per [12-local-timezone-dates.md](12-local-timezone-dates.md).
+
+- `git-date/src/tz.rs`: minimal TZif (RFC 8536) reader over
+  `/usr/share/zoneinfo` / `/etc/localtime` honoring `TZ` (v1 32-bit and
+  v2+ 64-bit blocks, transition binary search, DST-correct per-date
+  offsets, cache keyed on the resolved file path).
+- Tz-less date inputs now resolve in local time (C's `localtime_r`
+  semantics) instead of UTC; `ident.rs` records the local `+HHMM` offset
+  for commits; relative `month`/`year` units use calendar arithmetic with
+  day-of-month clamping (Feb 29 handling).
+- Verification: crosswise suite `phaseA12_crosswise.rs` (registered as
+  `phaseA12-crosswise`) compares commit ids with C git under TZ=UTC /
+  Asia/Tehran / America/New_York (including DST boundary dates) for
+  tz-less, epoch (`@...`) and explicit-offset dates; full workspace green;
+  scoreboard updated.
 
 ### A13 — pack delta compression on write
 

@@ -3,10 +3,12 @@
 //! A git-compatible subset of `date.c`. Timestamps carry a UTC offset in
 //! minutes (east of UTC), matching git's internal `date.offset`.
 //!
-//! Scope note: no timezone database is consulted; inputs without an explicit
-//! offset are interpreted as UTC (git uses the local timezone). Calendar math
-//! uses the proleptic Gregorian calendar via the well-known civil/epoch
-//! conversions.
+//! Scope note: inputs without an explicit offset are interpreted in the
+//! local timezone via the system TZif database (`tz.rs`), matching git's
+//! `localtime_r` behavior. Calendar math uses the proleptic Gregorian
+//! calendar via the well-known civil/epoch conversions.
+
+pub mod tz;
 
 use std::error::Error;
 use std::fmt;
@@ -239,18 +241,53 @@ fn parse_relative(s: &str, now: Timestamp) -> Option<Timestamp> {
     let mut words = rest.split_whitespace();
     let unit = words.next()?;
     let ago = words.next() == Some("ago");
+    let sign: i64 = if ago { -1 } else { 1 };
     let secs = match unit.trim_end_matches('s') {
         "second" => amount * 1,
         "minute" => amount * 60,
         "hour" => amount * 3600,
         "day" => amount * 86400,
         "week" => amount * 7 * 86400,
-        // Approximate; git uses calendar-aware math here.
-        "month" => amount * 30 * 86400,
-        "year" => amount * 365 * 86400,
+        // Calendar-aware: months and years shift the civil date, clamping
+        // the day of month like C git's tm normalization.
+        "month" => {
+            return Some(shift_months(now, sign * amount));
+        }
+        "year" => {
+            return Some(shift_months(now, sign * amount * 12));
+        }
         _ => return None,
     };
-    Some(Timestamp::new(if ago { now.secs - secs } else { now.secs + secs }, now.offset_min))
+    Some(Timestamp::new(now.secs + sign * secs, now.offset_min))
+}
+
+/// Add `amount` months to a timestamp in its own timezone, clamping the
+/// day of month to the target month's length.
+fn shift_months(now: Timestamp, amount: i64) -> Timestamp {
+    let local = now.secs + (now.offset_min as i64) * 60;
+    let days = local.div_euclid(86400);
+    let tod = local.rem_euclid(86400);
+    let (y, m, d) = civil_from_days(days);
+    let total = (y as i64) * 12 + (m as i64 - 1) + amount;
+    let ny = total.div_euclid(12);
+    let nm = total.rem_euclid(12) as u32 + 1;
+    // Clamp: Jan 31 + 1 month = Feb 28/29.
+    let days_in_month = |yy: i64, mm: u32| -> u32 {
+        match mm {
+            1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+            4 | 6 | 9 | 11 => 30,
+            _ => {
+                if (yy % 4 == 0 && yy % 100 != 0) || yy % 400 == 0 {
+                    29
+                } else {
+                    28
+                }
+            }
+        }
+    };
+    let nd = d.min(days_in_month(ny, nm));
+    let new_local = days_from_civil(ny, nm, nd) * 86400 + tod;
+    Timestamp::new(new_local - (now.offset_min as i64) * 60, now.offset_min)
 }
 
 fn parse_iso(s: &str) -> Result<Option<Timestamp>, DateError> {
@@ -298,13 +335,13 @@ fn parse_iso(s: &str) -> Result<Option<Timestamp>, DateError> {
         return Err(DateError::OutOfRange);
     }
 
+    let wall = secs_from_ymdhms(y, mo, d, h, mi, sec).ok_or(DateError::OutOfRange)?;
     let offset = match tz_part {
         Some(tz) => parse_tz(tz).ok_or(DateError::InvalidTimezone)?,
-        None => 0,
+        None => tz::wall_to_local(wall).1,
     };
 
-    let secs = secs_from_ymdhms(y, mo, d, h, mi, sec).ok_or(DateError::OutOfRange)?;
-    Ok(Some(Timestamp::new(secs - (offset as i64) * 60, offset)))
+    Ok(Some(Timestamp::new(wall - (offset as i64) * 60, offset)))
 }
 
 fn parse_rfc2822(s: &str) -> Result<Option<Timestamp>, DateError> {
@@ -364,6 +401,7 @@ fn parse_rfc2822(s: &str) -> Result<Option<Timestamp>, DateError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tz::test_support::lock_tz;
 
     const NOW: Timestamp = Timestamp {
         secs: 1_700_000_000,
@@ -372,12 +410,14 @@ mod tests {
 
     #[test]
     fn parses_epoch_forms() {
+        let _tz = lock_tz("UTC");
         assert_eq!(parse("1234567890", NOW).unwrap(), Timestamp::new(1_234_567_890, 0));
         assert_eq!(parse("@1234567890", NOW).unwrap(), Timestamp::new(1_234_567_890, 0));
     }
 
     #[test]
     fn parses_iso() {
+        let _tz = lock_tz("UTC");
         // 2020-02-18 11:11:14 +0000 == epoch 1582024274
         let ts = parse("2020-02-18 11:11:14 +0000", NOW).unwrap();
         assert_eq!(ts, Timestamp::new(1_582_024_274, 0));
@@ -391,6 +431,7 @@ mod tests {
 
     #[test]
     fn parses_rfc2822() {
+        let _tz = lock_tz("UTC");
         // Wed, 18 Feb 2020 11:11:14 +0000
         let ts = parse("Wed, 18 Feb 2020 11:11:14 +0000", NOW).unwrap();
         assert_eq!(ts, Timestamp::new(1_582_024_274, 0));
@@ -401,6 +442,7 @@ mod tests {
 
     #[test]
     fn parses_relative() {
+        let _tz = lock_tz("UTC");
         assert_eq!(parse("now", NOW).unwrap(), NOW);
         assert_eq!(parse("yesterday", NOW).unwrap().secs, NOW.secs - 86400);
         assert_eq!(parse("tomorrow", NOW).unwrap().secs, NOW.secs + 86400);
@@ -433,6 +475,7 @@ mod tests {
 
     #[test]
     fn parse_and_format_round_trip() {
+        let _tz = lock_tz("UTC");
         for input in [
             "2020-02-18 11:11:14 +0000",
             "2021-12-31 23:59:59 -0530",
@@ -445,6 +488,7 @@ mod tests {
 
     #[test]
     fn rfc2822_round_trip() {
+        let _tz = lock_tz("UTC");
         let ts = parse("Sun, 06 Nov 1994 08:49:37 +0000", NOW).unwrap();
         assert_eq!(ts.format_rfc2822(), "Sun, 06 Nov 1994 08:49:37 +0000");
     }
