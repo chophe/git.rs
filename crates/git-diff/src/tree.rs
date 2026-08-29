@@ -11,9 +11,18 @@ pub struct Change {
     pub new_mode: Option<String>,
     pub old_oid: Option<Oid>,
     pub new_oid: Option<Oid>,
-    /// `A` added, `D` deleted, `M` modified, `T` type-change.
+    /// `A` added, `D` deleted, `M` modified, `T` type-change, `R` rename.
     pub status: char,
+    /// Original path for renames/copies.
+    pub old_path: Option<String>,
+    /// Destination path for renames/copies (equals `path`).
+    pub new_path: Option<String>,
+    /// Rename/copy similarity score out of [`MAX_SCORE`].
+    pub score: Option<u32>,
 }
+
+/// Rename similarity full score (C git's `MAX_SCORE` = 60000).
+pub const MAX_SCORE: u32 = 60000;
 
 /// An object loader used to descend into subtrees.
 pub type Loader<'a> = dyn FnMut(&Oid) -> Option<Object> + 'a;
@@ -63,7 +72,10 @@ pub fn compare_trees(
                                 new_mode: Some(n.mode.clone()),
                                 old_oid: Some(o.oid),
                                 new_oid: Some(n.oid),
-                                status: 'T',
+                                old_path: None,
+            new_path: None,
+            score: None,
+            status: 'T',
                             });
                         } else {
                             changes.push(Change {
@@ -72,7 +84,10 @@ pub fn compare_trees(
                                 new_mode: Some(n.mode.clone()),
                                 old_oid: Some(o.oid),
                                 new_oid: Some(n.oid),
-                                status: 'M',
+                                old_path: None,
+            new_path: None,
+            score: None,
+            status: 'M',
                             });
                         }
                     }
@@ -113,6 +128,9 @@ fn collect_add(
             new_mode: Some(e.mode.clone()),
             old_oid: None,
             new_oid: Some(e.oid),
+            old_path: None,
+            new_path: None,
+            score: None,
             status: 'A',
         });
     }
@@ -137,6 +155,9 @@ fn collect_delete(
             new_mode: None,
             old_oid: Some(e.oid),
             new_oid: None,
+            old_path: None,
+            new_path: None,
+            score: None,
             status: 'D',
         });
     }

@@ -66,6 +66,12 @@ pub struct Index {
     pub entries: Vec<IndexEntry>,
 }
 
+impl Default for Index {
+    fn default() -> Index {
+        Index { version: 2, entries: Vec::new() }
+    }
+}
+
 /// Errors from index parsing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IndexError {

@@ -8,6 +8,12 @@ pub const CONTEXT: usize = 3;
 
 /// Render `b` as a unified diff against `a`, given the edit script.
 pub fn render_unified(a: &[&[u8]], b: &[&[u8]], ops: &[Op]) -> Vec<u8> {
+    render_unified_ctx(a, b, ops, CONTEXT)
+}
+
+/// Like [`render_unified`] with an explicit context width (`-U<n>`).
+pub fn render_unified_ctx(a: &[&[u8]], b: &[&[u8]], ops: &[Op], context: usize) -> Vec<u8> {
+    let context = context;
     // Find runs of change ops.
     let mut extents: Vec<(usize, usize)> = Vec::new();
     let mut k = 0usize;
@@ -27,7 +33,7 @@ pub fn render_unified(a: &[&[u8]], b: &[&[u8]], ops: &[Op]) -> Vec<u8> {
     let mut merged: Vec<(usize, usize)> = Vec::new();
     for (s, e) in extents {
         if let Some(last) = merged.last_mut() {
-            if s - last.1 <= 2 * CONTEXT {
+            if s - last.1 <= 2 * context {
                 last.1 = e;
                 continue;
             }
@@ -37,8 +43,8 @@ pub fn render_unified(a: &[&[u8]], b: &[&[u8]], ops: &[Op]) -> Vec<u8> {
 
     let mut out = Vec::new();
     for (s, e) in merged {
-        let lo = s.saturating_sub(CONTEXT);
-        let hi = (e + CONTEXT).min(ops.len());
+        let lo = s.saturating_sub(context);
+        let hi = (e + context).min(ops.len());
 
         // Line positions at the start of the hunk.
         let (mut old_pos, mut new_pos) = (0usize, 0usize);
@@ -112,10 +118,15 @@ pub fn render_unified(a: &[&[u8]], b: &[&[u8]], ops: &[Op]) -> Vec<u8> {
 
 /// Produce a unified diff of two blobs.
 pub fn diff_blobs(old: &[u8], new: &[u8]) -> Vec<u8> {
+    diff_blobs_ctx(old, new, CONTEXT)
+}
+
+/// Produce a unified diff of two blobs with an explicit context width.
+pub fn diff_blobs_ctx(old: &[u8], new: &[u8], context: usize) -> Vec<u8> {
     let a = split_lines(old);
     let b = split_lines(new);
     let ops = super::myers::diff(&a, &b);
-    render_unified(&a, &b, &ops)
+    render_unified_ctx(&a, &b, &ops, context)
 }
 
 use std::fmt::Write;
