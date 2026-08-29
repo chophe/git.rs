@@ -108,6 +108,15 @@ impl Object {
         hasher.into_oid()
     }
 
+    /// Compute the object id like [`Object::compute_id`], but fail when the
+    /// collision-detecting SHA-1 recognizes a collision attack.
+    pub fn try_compute_id(&self, algo: HashAlgorithm) -> Result<Oid, git_hash::HashError> {
+        let mut hasher = algo.hasher();
+        hasher.update(&self.header_bytes());
+        hasher.update(&self.data);
+        hasher.finalize_oid_checked()
+    }
+
     /// Parse an object from its serialized bytes (header + content).
     ///
     /// Returns the object and the length of the header.

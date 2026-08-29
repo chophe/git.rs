@@ -77,7 +77,7 @@ impl Command for HashObject {
             let obj = Object::from_data(k, data);
             let oid = match &store {
                 Some(s) => s.write(&obj).map_err(CommandError::from)?,
-                None => obj.compute_id(algo),
+                None => obj.try_compute_id(algo).map_err(|e| CommandError::fatal(e.to_string()))?,
             };
             writeln!(out, "{oid}").map_err(|e| CommandError::fatal(e.to_string()))?;
         }

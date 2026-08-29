@@ -38,6 +38,8 @@ pub enum OdbError {
     Io(String),
     Corrupt(String),
     NotFound,
+    /// The object content matches a known SHA-1 collision attack pattern.
+    Collision(String),
 }
 
 impl fmt::Display for OdbError {
@@ -46,6 +48,9 @@ impl fmt::Display for OdbError {
             OdbError::Io(e) => write!(f, "object store I/O error: {e}"),
             OdbError::Corrupt(e) => write!(f, "corrupt object: {e}"),
             OdbError::NotFound => write!(f, "object not found"),
+            OdbError::Collision(hex) => {
+                write!(f, "SHA-1 appears to be part of a collision attack: {hex}")
+            }
         }
     }
 }
@@ -182,7 +187,9 @@ impl LooseStore {
     /// Write an object, returning its id. Writing an existing object is
     /// idempotent (returns the same id without error).
     pub fn write(&self, object: &Object) -> Result<Oid, OdbError> {
-        let oid = object.compute_id(self.algo);
+        let oid = object.try_compute_id(self.algo).map_err(|e| match e {
+            git_hash::HashError::Collision(hex) => OdbError::Collision(hex),
+        })?;
         if self.contains(&oid) {
             return Ok(oid);
         }

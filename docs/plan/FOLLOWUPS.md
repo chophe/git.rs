@@ -7,14 +7,13 @@ tested.
 
 ## A. Deferred implementation (code)
 
-1. **Collision-detecting SHA-1 (sha1dc)** — `crates/git-hash` — **NOT DONE**
-   - Today `git-hash` uses a hand-written standard SHA-1; `CryptoHasher::is_safe()`
-     returns `false` for SHA-1 (see `git-hash/src/lib.rs`).
-   - Port the in-tree `sha1dc/` algorithm to pure Rust behind the existing
-     `CryptoHasher::Sha1` variant, then set `is_safe()` true for SHA-1.
-   - Gate: `src/hash.rs` had this behavior; add a collision-block test (mirror
-     `t/t0013-sha1dc.sh`).
-   - Phase 0 doc: `docs/plan/phase-0-foundation.md` ("Risks").
+1. **DONE (A1)** — Collision-detecting SHA-1 (sha1dc) — `crates/git-hash`
+   - Pure-Rust port of the vendored `sha1dc/` algorithm in
+     `git-hash/src/sha1dc.rs`; wired behind `CryptoHasher::Sha1`;
+     `is_safe()` now returns true for SHA-1.
+   - Collision-block test mirrors `t/t0013-sha1dc.sh` (SHAttered PDF is
+     detected, digest `38762cf7...` reported like C git); detection threads
+     through `hash-object` and loose-object writes.
 
 2. **`git index-pack` command** — **DONE** (`git-command/src/index_pack.rs`)
    - Builds an `.idx` from a `.pack` (entry walk + `write_idx`); `--verify`

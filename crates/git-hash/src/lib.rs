@@ -6,11 +6,33 @@
 //! (e.g. collision-detecting SHA-1) later.
 
 pub mod sha1;
+pub mod sha1dc;
 pub mod sha256;
 
 use std::error::Error;
 use std::fmt;
 use std::io::{self, Write};
+
+/// An error produced while hashing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HashError {
+    /// The input matches a known SHA-1 collision attack pattern
+    /// (sha1dc detected a collision block); the payload is the hex digest
+    /// of the colliding input, as reported by C git.
+    Collision(String),
+}
+
+impl fmt::Display for HashError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            HashError::Collision(hex) => {
+                write!(f, "SHA-1 appears to be part of a collision attack: {hex}")
+            }
+        }
+    }
+}
+
+impl Error for HashError {}
 
 /// The maximum size, in bytes, of any supported object id.
 pub const GIT_MAX_RAWSZ: usize = 32;
@@ -273,7 +295,7 @@ pub trait CryptoDigest {
 /// A hasher that wraps the pure-Rust SHA-1 and SHA-256 implementations.
 #[derive(Clone)]
 pub enum CryptoHasher {
-    Sha1(sha1::Sha1),
+    Sha1(sha1dc::Sha1Dc),
     Sha256(sha256::Sha256),
 }
 
@@ -281,7 +303,7 @@ impl CryptoHasher {
     /// Create a new hasher for `algo`.
     pub fn new(algo: HashAlgorithm) -> CryptoHasher {
         match algo {
-            HashAlgorithm::Sha1 => CryptoHasher::Sha1(sha1::Sha1::new()),
+            HashAlgorithm::Sha1 => CryptoHasher::Sha1(sha1dc::Sha1Dc::new()),
             HashAlgorithm::Sha256 => CryptoHasher::Sha256(sha256::Sha256::new()),
         }
     }
@@ -303,10 +325,25 @@ impl CryptoHasher {
     }
 
     /// Consume the hasher and return the raw hash bytes.
+    ///
+    /// For colliding input this yields the attacked digest (safe hashing is
+    /// off, matching C git's default); callers that care use
+    /// `finalize_checked`.
     pub fn finalize(self) -> Vec<u8> {
         match self {
-            CryptoHasher::Sha1(h) => h.finalize().to_vec(),
+            CryptoHasher::Sha1(h) => h.finalize_lossy().to_vec(),
             CryptoHasher::Sha256(h) => h.finalize().to_vec(),
+        }
+    }
+
+    /// Consume the hasher and return the raw hash bytes, or an error when a
+    /// SHA-1 collision attack is detected.
+    pub fn finalize_checked(self) -> Result<Vec<u8>, HashError> {
+        match self {
+            CryptoHasher::Sha1(h) => h.finalize().map(|d| d.to_vec()).map_err(|d| {
+                HashError::Collision(d.iter().map(|b| format!("{b:02x}")).collect())
+            }),
+            CryptoHasher::Sha256(h) => Ok(h.finalize().to_vec()),
         }
     }
 
@@ -314,13 +351,21 @@ impl CryptoHasher {
     pub fn finalize_oid(self) -> Oid {
         Oid::new(self.algorithm(), &self.finalize())
     }
+
+    /// Consume the hasher and return the object id, or an error when a
+    /// SHA-1 collision attack is detected.
+    pub fn finalize_oid_checked(self) -> Result<Oid, HashError> {
+        let algo = self.algorithm();
+        self.finalize_checked().map(|v| Oid::new(algo, &v))
+    }
 }
 
 impl CryptoDigest for CryptoHasher {
     fn is_safe(&self) -> bool {
-        // Standard SHA-1 is not collision safe; only SHA-256 is.
+        // The collision-detecting SHA-1 rejects known collision attacks;
+        // SHA-256 has no known attacks.
         match self {
-            CryptoHasher::Sha1(_) => false,
+            CryptoHasher::Sha1(_) => true,
             CryptoHasher::Sha256(_) => true,
         }
     }
@@ -447,7 +492,7 @@ mod tests {
 
     #[test]
     fn safety_flags() {
-        assert!(!HashAlgorithm::Sha1.hasher().is_safe());
+        assert!(HashAlgorithm::Sha1.hasher().is_safe());
         assert!(HashAlgorithm::Sha256.hasher().is_safe());
     }
 }
@@ -479,6 +524,18 @@ mod props {
                 inc.update(c);
             }
             prop_assert_eq!(inc.finalize(), one.finalize());
+        }
+
+        /// The collision-detecting SHA-1 must produce the same digest as the
+        /// standard SHA-1 on arbitrary non-colliding input.
+        #[test]
+        fn sha1dc_matches_standard_sha1(data: Vec<u8>) {
+            use super::sha1dc::Sha1Dc;
+            let mut one = Sha1::new();
+            one.update(&data);
+            let mut dc = Sha1Dc::new();
+            dc.update(&data);
+            prop_assert_eq!(dc.finalize().unwrap().to_vec(), one.finalize());
         }
 
         /// Hashing the serialized form of a blob must yield an oid of the

@@ -7,7 +7,7 @@ where it landed, and how it was verified. Newest entries at the bottom.
 | Date | Item | Status |
 |---|---|---|
 | 2026-08-29 | A2 repo discovery / `--git-dir` / `--work-tree` | DONE |
-| 2026-08-29 | A1 sha1dc collision-detecting SHA-1 | planned |
+| 2026-08-29 | A1 sha1dc collision-detecting SHA-1 | DONE |
 | 2026-08-29 | A3 `cat-file --batch` / `--batch-check` / `%(format)` | planned |
 | 2026-08-29 | A4 abbreviation resolution | planned |
 | 2026-08-29 | A5 `rev-parse` completion | planned |
@@ -52,9 +52,29 @@ Implemented per [02-repo-discovery-env.md](02-repo-discovery-env.md).
   for flag/env/`-C` forms; full workspace tests green; scoreboard baseline
   updated with the new passing suite; FOLLOWUPS.md §C item marked DONE.
 
-### A1 — sha1dc collision-detecting SHA-1
+### A1 — sha1dc collision-detecting SHA-1 — DONE
 
 Implemented per [01-sha1dc.md](01-sha1dc.md).
+
+- `crates/git-hash/src/sha1dc.rs`: pure-Rust port of the vendored
+  `sha1dc/` C sources — streaming update/finalize, per-step state capture,
+  the 32 disturbance vectors (generated from `ubc_check.c`), the
+  unavoidable-bitcondition mask, and the recompression check
+  (`sha1_recompression_step` via loop form). The C trailing per-DV exact
+  refinement block is omitted (it only clears mask bits, a performance
+  filter); detection is driven by the recompression check itself.
+- `CryptoHasher::Sha1` now uses sha1dc; `is_safe()` returns true for SHA-1
+  (negative test inverted). New `finalize_checked`/`finalize_oid_checked`
+  error path: colliding input yields
+  `SHA-1 appears to be part of a collision attack: <digest>` (C git's die
+  message); plain `finalize` keeps C git's default safe-hash=0 digest.
+- Detection wired through `git-object::try_compute_id`, loose-object writes
+  (`git-odb` `OdbError::Collision`), and `hash-object`.
+- Verification: SHAttered PDF unit test (detected, `38762cf7...` reported),
+  proptest sha1dc == standard SHA-1 on arbitrary inputs, new crosswise suite
+  `phaseA01_crosswise.rs` (registered as `phaseA01-crosswise`) byte-identical
+  vs system git; full workspace tests green; scoreboard baseline updated;
+  FOLLOWUPS.md §A1 marked DONE.
 
 ### A3 — `cat-file --batch` / `--batch-check` / `%(format)`
 
