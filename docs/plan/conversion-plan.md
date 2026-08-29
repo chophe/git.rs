@@ -24,19 +24,20 @@ Dependency-free; everything later builds on these.
 
 | # | Item | Crate/Module | Spec / test gate | Notes |
 |---|---|---|---|---|
-| A1 | sha1dc collision-detecting SHA-1; `is_safe()` true | `git-hash` | `t/t0013` | FOLLOWUPS A1 |
-| A2 | `--git-dir`/`--work-tree` threading through all commands | `git-command` (shared context struct) | existing suites stay green | FOLLOWUPS C; do this **first** so later commands are born with it |
-| A3 | `cat-file --batch` / `--batch-check` / `%(format)` | `git-command/cat_file.rs` | `t/t1006` | FOLLOWUPS A3 |
-| A4 | abbreviation resolution (short OIDs, refs, `HEAD~n`) as shared helper | `git-revision` + `git-command` | `t/t1514`, `t/t1400` | unblocks commit-tree, log ranges, rev-parse |
-| A5 | `rev-parse` completion: `@{...}`, `A..B`/`A...B`, `--all`, `--is-bare-repository`, `--sq` | `git-command/rev_parse.rs` | `t/t1500`–`t/t1503` | Phase 7 leftover |
-| A6 | `rev-list`/`log` options: `--objects`, `--count`, `-n`, ranges, `--topo-order`, `--date-order`, `--first-parent`, `--all`, path limiting, grafts/replace | `git-revision`, `git-command/rev_list.rs`, `log.rs` | `t/t6001`–`t/t6019` | Phase 4 leftover |
-| A7 | pretty-printing engine (`pretty.c` port): `--format`, default `Date:` line, date formats, trailers, mailmap | new `git-pretty` crate | `t/t4205`, `t/t6006` | needed by `log`, `format-patch`, `show`, `shortlog` |
-| A8 | diff engine completion: `--cached`, `-U<n>`, `--stat`/`--numstat`/`--shortstat`/`--summary`, rename/copy detection, `--diff-filter`, pickaxe, no-newline-at-EOF, binary, `--exit-code` | `git-diff`, `git-command/diff.rs`, `diff_tree.rs` | `t/t4001`–`t/t4014`, `t/t4002` (rename) | Phase 5 leftover; largest algorithm item in Phase A |
-| A9 | hunk-header function context (userdiff drivers) | `git-diff` | `t/t4018` | port `userdiff.c` driver table |
-| A10 | `count-objects -v` real sizes | `git-command/count_objects.rs` | `t/t1450` (fsck suite covers -v indirectly) | FOLLOWUPS A5 |
-| A11 | **`.gitignore` + attributes engine**: `ignore.c`, `attr.c` port, `GIT_*` env | new `git-ignore` (or inside `git-index`) | `t/t0007` (attr), `t/t0008` (ignore) | hard prerequisite for `add`, `status --ignored`, `clean`, `ls-files --others` |
-| A12 | local timezone for dates + idents (fixes UTC-only) | `git-date`, `git-command/ident.rs` | `t/t0006` | FOLLOWUPS A6/A7 |
-| A13 | delta compression in `pack-objects` write path | `git-odb/pack` | existing `pack_crosswise` + `git verify-pack` | FOLLOWUPS A4; also prerequisite for real-world repo size |
+| A0 | Phase A overview & order | [phase-a/00-overview.md](phase-a/00-overview.md) | shared gates | per-item expanded docs |
+| A1 | sha1dc collision-detecting SHA-1; `is_safe()` true | `git-hash` | `t/t0013` | FOLLOWUPS A1 — [phase-a/01-sha1dc.md](phase-a/01-sha1dc.md) |
+| A2 | `--git-dir`/`--work-tree` threading through all commands | `git-command` (shared context struct) | existing suites stay green | FOLLOWUPS C; do this **first** so later commands are born with it — [phase-a/02-repo-discovery-env.md](phase-a/02-repo-discovery-env.md) |
+| A3 | `cat-file --batch` / `--batch-check` / `%(format)` | `git-command/cat_file.rs` | `t/t1006` | FOLLOWUPS A3 — [phase-a/03-cat-file-batch.md](phase-a/03-cat-file-batch.md) |
+| A4 | abbreviation resolution (short OIDs, refs, `HEAD~n`) as shared helper | `git-revision` + `git-command` | `t/t1514`, `t/t1400` | unblocks commit-tree, log ranges, rev-parse — [phase-a/04-abbrev-resolution.md](phase-a/04-abbrev-resolution.md) |
+| A5 | `rev-parse` completion: `@{...}`, `A..B`/`A...B`, `--all`, `--is-bare-repository`, `--sq` | `git-command/rev_parse.rs` | `t/t1500`–`t/t1503` | Phase 7 leftover — [phase-a/05-rev-parse-completion.md](phase-a/05-rev-parse-completion.md) |
+| A6 | `rev-list`/`log` options: `--objects`, `--count`, `-n`, ranges, `--topo-order`, `--date-order`, `--first-parent`, `--all`, path limiting, grafts/replace | `git-revision`, `git-command/rev_list.rs`, `log.rs` | `t/t6001`–`t/t6019` | Phase 4 leftover — [phase-a/06-rev-list-log-options.md](phase-a/06-rev-list-log-options.md) |
+| A7 | pretty-printing engine (`pretty.c` port): `--format`, default `Date:` line, date formats, trailers, mailmap | new `git-pretty` crate | `t/t4205`, `t/t6006` | needed by `log`, `format-patch`, `show`, `shortlog` — [phase-a/07-pretty-engine.md](phase-a/07-pretty-engine.md) |
+| A8 | diff engine completion: `--cached`, `-U<n>`, `--stat`/`--numstat`/`--shortstat`/`--summary`, rename/copy detection, `--diff-filter`, pickaxe, no-newline-at-EOF, binary, `--exit-code` | `git-diff`, `git-command/diff.rs`, `diff_tree.rs` | `t/t4001`–`t/t4014`, `t/t4002` (rename) | Phase 5 leftover; largest algorithm item in Phase A — [phase-a/08-diff-options.md](phase-a/08-diff-options.md) |
+| A9 | hunk-header function context (userdiff drivers) | `git-diff` | `t/t4018` | port `userdiff.c` driver table — [phase-a/09-userdiff-hunk-headers.md](phase-a/09-userdiff-hunk-headers.md) |
+| A10 | `count-objects -v` real sizes | `git-command/count_objects.rs` | `t/t1450` (fsck suite covers -v indirectly) | sizes implemented; close-out — [phase-a/10-count-objects-v.md](phase-a/10-count-objects-v.md) |
+| A11 | **`.gitignore` + attributes engine**: `ignore.c`, `attr.c` port, `GIT_*` env | new `git-ignore` (or inside `git-index`) | `t/t0007` (attr), `t/t0008` (ignore) | hard prerequisite for `add`, `status --ignored`, `clean`, `ls-files --others` — [phase-a/11-gitignore-attributes.md](phase-a/11-gitignore-attributes.md) |
+| A12 | local timezone for dates + idents (fixes UTC-only) | `git-date`, `git-command/ident.rs` | `t/t0006` | FOLLOWUPS A6/A7 — [phase-a/12-local-timezone-dates.md](phase-a/12-local-timezone-dates.md) |
+| A13 | delta compression in `pack-objects` write path | `git-odb/pack` | existing `pack_crosswise` + `git verify-pack` | FOLLOWUPS A4; also prerequisite for real-world repo size — [phase-a/13-pack-delta-compression.md](phase-a/13-pack-delta-compression.md) |
 
 ## Phase B — Workflow core ("usable repo")
 
