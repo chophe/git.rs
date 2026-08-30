@@ -91,6 +91,13 @@ pub fn display_name(c: &git_diff::Change) -> String {
 
 /// `--numstat` line.
 pub fn render_numstat(c: &git_diff::Change, src: &BlobSource, out: &mut dyn Write) -> Result<(), CommandError> {
+    let (old_data, new_data) = blob_pair(c, src);
+    if is_binary(&old_data) || is_binary(&new_data) {
+        // Binary files render as `-<TAB>-<TAB>path` in --numstat.
+        writeln!(out, "-	-	{}", display_name(c))
+            .map_err(|e| CommandError::fatal(e.to_string()))?;
+        return Ok(());
+    }
     let (adds, dels) = change_line_counts(c, src);
     writeln!(out, "{}	{}	{}", adds, dels, display_name(c))
         .map_err(|e| CommandError::fatal(e.to_string()))
@@ -121,6 +128,13 @@ pub fn render_name_line(c: &git_diff::Change, with_status: bool, out: &mut dyn W
 
 /// `--raw` line: `:oldmode newmode oldoid newoid status	path`.
 pub fn render_raw(c: &git_diff::Change, out: &mut dyn Write) -> Result<(), CommandError> {
+    // C git abbreviates raw oids to the default 7 characters.
+    fn hex7(oid: &Option<Oid>) -> String {
+        match oid {
+            Some(o) => o.to_string()[..7].to_string(),
+            None => "0000000".to_string(),
+        }
+    }
     let status = match c.status {
         'R' => format!("R{}", c.score.unwrap_or(0) * 100 / git_diff::MAX_SCORE),
         s => s.to_string(),
@@ -129,23 +143,12 @@ pub fn render_raw(c: &git_diff::Change, out: &mut dyn Write) -> Result<(), Comma
     let nm = mode6(&c.new_mode);
     match (&c.old_path, &c.new_path) {
         (Some(o), Some(n)) if o != n => {
-            writeln!(
-                out,
-                ":{om} {nm} {} {} {status}	{o}	{n}",
-                full_hex(&c.old_oid),
-                full_hex(&c.new_oid)
-            )
-            .map_err(|e| CommandError::fatal(e.to_string()))?;
+            writeln!(out, ":{om} {nm} {} {} {status}	{o}	{n}", hex7(&c.old_oid), hex7(&c.new_oid))
+                .map_err(|e| CommandError::fatal(e.to_string()))?;
         }
         _ => {
-            writeln!(
-                out,
-                ":{om} {nm} {} {} {status}	{}",
-                full_hex(&c.old_oid),
-                full_hex(&c.new_oid),
-                c.path
-            )
-            .map_err(|e| CommandError::fatal(e.to_string()))?;
+            writeln!(out, ":{om} {nm} {} {} {status}	{}", hex7(&c.old_oid), hex7(&c.new_oid), c.path)
+                .map_err(|e| CommandError::fatal(e.to_string()))?;
         }
     }
     Ok(())
@@ -233,10 +236,14 @@ pub fn render_stat(changes: &[git_diff::Change], src: &BlobSource, out: &mut dyn
     let mut files: Vec<FileStat> = Vec::new();
     let mut max_change: u64 = 0;
     let mut max_len: usize = 0;
+    let mut has_binary = false;
     for c in changes {
         let name = display_name(c);
         let (old_data, new_data) = blob_pair(c, src);
         let binary = is_binary(&old_data) || is_binary(&new_data);
+        if binary {
+            has_binary = true;
+        }
         let (added, deleted) = if binary {
             (new_data.len() as u64, old_data.len() as u64)
         } else {
@@ -258,7 +265,8 @@ pub fn render_stat(changes: &[git_diff::Change], src: &BlobSource, out: &mut dyn
     }
 
     let width = 80usize;
-    let number_width = decimal_width(max_change as usize);
+    // A binary file widens the count column to fit "Bin" (C git parity).
+    let number_width = decimal_width(max_change as usize).max(if has_binary { 3 } else { 0 });
     let mut bin_width = 0usize;
     for f in &files {
         if f.binary {
@@ -306,8 +314,8 @@ pub fn render_stat(changes: &[git_diff::Change], src: &BlobSource, out: &mut dyn
         let padding = len.saturating_sub(name.len());
         if f.binary {
             line.push_str(&format!(
-                " {prefix}{name}{pad:>width$} | {:>nw$}Bin",
-                "",
+                " {prefix}{name}{pad:>width$} | {:>nw$}",
+                "Bin",
                 pad = "",
                 width = padding,
                 nw = number_width,
@@ -368,6 +376,7 @@ pub fn render_shortstat(changes: &[git_diff::Change], src: &BlobSource, out: &mu
     for c in changes {
         let (old_data, new_data) = blob_pair(c, src);
         if is_binary(&old_data) || is_binary(&new_data) {
+            total += 1;
             continue;
         }
         total += 1;

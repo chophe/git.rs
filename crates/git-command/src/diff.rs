@@ -87,6 +87,7 @@ impl Command for Diff {
                     opts.patch_with_stat = true;
                 }
                 "--cached" | "--staged" => opts.cached = true,
+                "--no-renames" => opts.find_renames = false,
                 "-M" | "--find-renames" => opts.find_renames = true,
                 s if s.starts_with("--find-renames=") => {
                     opts.find_renames = true;
@@ -138,12 +139,12 @@ impl Command for Diff {
         if revs.len() == 2 {
             let t1 = resolve_tree(&repo, &odb, &revs[0])?;
             let t2 = resolve_tree(&repo, &odb, &revs[1])?;
-            run_diff(&odb, &extra, Some(t1), t2, &paths, &opts, out)?;
+            run_diff(&odb, &extra, Some(t1), t2, &paths, &opts, out, &HashSet::new())?;
             return finish(opts.exit_code);
         }
 
         let index_tree = build_index_tree(&index, &mut extra, algo);
-        let work_tree = build_worktree_tree(&repo, &index, &mut extra, algo)?;
+        let (work_tree, dirty) = build_worktree_tree(&repo, &index, &mut extra, algo)?;
 
         let (old_tree, new_tree) = if revs.len() == 1 {
             let rev_tree = resolve_tree(&repo, &odb, &revs[0])?;
@@ -157,7 +158,7 @@ impl Command for Diff {
             (Some(index_tree), work_tree)
         };
 
-        run_diff(&odb, &extra, old_tree, new_tree, &paths, &opts, out)?;
+        run_diff(&odb, &extra, old_tree, new_tree, &paths, &opts, out, &dirty)?;
         finish(opts.exit_code)
     }
 }
@@ -198,6 +199,7 @@ fn run_diff(
     paths: &[String],
     opts: &Options,
     out: &mut dyn Write,
+    dirty: &HashSet<Oid>,
 ) -> Result<(), CommandError> {
     let algo = odb.algorithm();
     let tree_entries = |oid: Option<Oid>| -> Vec<git_object::TreeEntry> {
@@ -234,9 +236,19 @@ fn run_diff(
     }
 
     if opts.find_renames {
-        eprintln!("DBG renames called, changes={}", changes.len());
         detect_renames(&mut changes, extra, odb, opts.rename_threshold);
-        for c in &changes { eprintln!("DBG {} {} {} {:?}", c.status, c.path, c.old_oid.map(|o| o.to_string()[..7].to_string()).unwrap_or_default(), c.score); }
+    }
+
+    // `--raw` for worktree-side blobs: dirty files have no known oid.
+    let mut raw_changes: Vec<git_diff::Change> = Vec::new();
+    if opts.output == Output::Raw {
+        for c in &changes {
+            let mut c = c.clone();
+            if dirty.contains(c.new_oid.as_ref().unwrap_or(&git_hash::HashAlgorithm::Sha1.null_oid())) {
+                c.new_oid = None;
+            }
+            raw_changes.push(c);
+        }
     }
 
     if let Some((set, exclude)) = &opts.diff_filter {
@@ -285,7 +297,7 @@ fn run_diff(
             }
         }
         Output::Raw => {
-            for c in &changes {
+            for c in &raw_changes {
                 patch::render_raw(c, out)?;
             }
         }
@@ -349,14 +361,12 @@ fn detect_renames(
                 }
             }
         }
-        let mut consumed: Vec<usize> = seen_dst.into_iter().collect();
-        consumed.sort_unstable();
-        for (di, ai) in pairs {
+        for (di, ai) in pairs.iter() {
             let (dpath, dmode, doid) = {
-                let d = &changes[di];
+                let d = &changes[*di];
                 (d.path.clone(), d.old_mode.clone(), d.old_oid)
             };
-            let a = &mut changes[ai];
+            let a = &mut changes[*ai];
             a.status = 'R';
             a.score = Some(git_diff::MAX_SCORE);
             a.old_path = Some(dpath);
@@ -364,6 +374,12 @@ fn detect_renames(
             a.path = a.new_path.clone().unwrap_or_default();
             a.old_mode = dmode;
             a.old_oid = doid;
+        }
+        // Drop the paired deletes (higher index first so indices stay valid).
+        let mut dels_to_remove: Vec<usize> = pairs.iter().map(|(di, _)| *di).collect();
+        dels_to_remove.sort_unstable();
+        for di in dels_to_remove.into_iter().rev() {
+            changes.remove(di);
         }
     }
     // Similarity pass over remaining D/A pairs.
@@ -510,9 +526,10 @@ fn build_worktree_tree(
     index: &Index,
     extra: &mut HashMap<Oid, Vec<u8>>,
     algo: HashAlgorithm,
-) -> Result<Oid, CommandError> {
+) -> Result<(Oid, HashSet<Oid>), CommandError> {
     let work_tree: &Path = repo.work_tree.as_deref().unwrap_or(Path::new("."));
     let mut entries: Vec<(String, u32, Oid)> = Vec::new();
+    let mut dirty: HashSet<Oid> = HashSet::new();
     if std::env::var_os("DIFF_DEBUG").is_some() {
         eprintln!("wt={:?} entries={}", work_tree.display(), index.entries.len());
     }
@@ -542,11 +559,12 @@ fn build_worktree_tree(
             let obj = Object::from_data(ObjectKind::Blob, data);
             let oid = obj.compute_id(algo);
             extra.insert(oid.clone(), obj.data);
+            dirty.insert(oid.clone());
             oid
         };
         entries.push((e.name.clone(), e.mode, oid));
     }
-    Ok(build_tree_from_flat(entries, extra, algo))
+    Ok((build_tree_from_flat(entries, extra, algo), dirty))
 }
 
 fn no_index_diff(a_path_raw: &str, b_path_raw: &str, out: &mut dyn Write) -> Result<(), CommandError> {
