@@ -107,9 +107,11 @@ pub fn render_unified_ctx(a: &[&[u8]], b: &[&[u8]], ops: &[Op], context: usize) 
                     j += 1;
                 }
             }
-            // Ensure a trailing newline even for unterminated lines.
+            // Unterminated last line: C git prints a newline and a
+            // backslash marker after the content.
             if !out.ends_with(b"\n") {
                 out.push(b'\n');
+                out.extend_from_slice(b"\\ No newline at end of file\n");
             }
         }
     }
