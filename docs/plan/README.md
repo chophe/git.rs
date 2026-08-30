@@ -87,5 +87,6 @@ criteria 1–8 one-command, CI-enforced, and regression-tracked.
 2. [FOLLOWUPS.md](FOLLOWUPS.md) — the actionable backlog (deferred code, infra, deviations).
    3. [gap-analysis.md](gap-analysis.md) — systematic C-vs-Rust gap comparison.
    4. [conversion-plan.md](conversion-plan.md) — the ordered plan to convert everything remaining.
+   5. [test-completion-plan.md](test-completion-plan.md) — roadmap from current test state to full acceptance criteria.
 3. [phase-0-foundation.md](phase-0-foundation.md), [phase-1-loose-objects.md](phase-1-loose-objects.md) — Part 1.
 4. Phases 2–9 in dependency order.
