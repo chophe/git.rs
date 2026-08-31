@@ -44,10 +44,8 @@ impl Command for DiffTree {
         let odb = Odb::from_repo(&repo).map_err(CommandError::from)?;
         let algo = repo.hash_algo;
 
-        let t1 = Oid::from_hex(&trees[0], algo)
-            .map_err(|_| CommandError::error(format!("Not a valid object name '{}'", trees[0])))?;
-        let t2 = Oid::from_hex(&trees[1], algo)
-            .map_err(|_| CommandError::error(format!("Not a valid object name '{}'", trees[1])))?;
+        let t1 = crate::resolve_arg(&repo, &trees[0])?;
+        let t2 = crate::resolve_arg(&repo, &trees[1])?;
         let obj1 = odb.read(&t1).map_err(|e| CommandError::error(e.to_string()))?;
         let obj2 = odb.read(&t2).map_err(|e| CommandError::error(e.to_string()))?;
         let e1 = parse_tree(&obj1.data, algo).map_err(|e| CommandError::error(e.to_string()))?;
