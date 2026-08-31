@@ -9,3 +9,4 @@ description = "Tree comparison and unified-diff generation"
 [dependencies]
 git-hash = { path = "../git-hash" }
 git-object = { path = "../git-object" }
+regex = "=1.11.1"
