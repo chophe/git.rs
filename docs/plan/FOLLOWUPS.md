@@ -57,6 +57,30 @@ tested.
 
 13. **`cat-file --batch` input via refs** — DONE as part of A3.
 
+14. **DONE (A8)** — Diff/patch engine completion (`git diff`, `diff-tree`,
+    `patch`). Implemented in `git-command/src/{diff,diff_tree,patch}.rs` +
+    `git-diff/src/{unified,tree}.rs`:
+    - `-U<n>` context, `\ No newline at end of file`, section-context in
+      `@@` headers, zero-count hunk ranges; `--stat`/`--shortstat`/
+      `--numstat`/`--name-only`/`--name-status`/`--raw`/`--summary`/
+      `--patch-with-stat`, `-s`, `--cached/--staged`,
+      `-M/--find-renames[=n]`, `--no-renames`, `--diff-filter=`,
+      `--exit-code/--quiet`, `--no-index`, worktree + index + HEAD/tree
+      sources, rename detection (exact + line-similarity), path limiting.
+    - `diff-tree` gains `--exit-code`/`--quiet` and resolves commit-ish
+      arguments to trees.
+    - Crosswise suite `phaseA08_crosswise.rs` (registered `phaseA08-crosswise`),
+      byte-identical vs system git.
+    - **Deferred for A8**: word-diff (`--word-diff`), `--color`, `--patience`/
+      `--histogram` algorithms, `--dirstat`, whitespace family (`-w`/`-b`/
+      `--ignore-blank-lines`), `--relative`, `-S`/`-G` pickaxe, and stat width
+      hard-coded to 80 columns (like C git on a non-tty).
+    - **Known deviations**: exact rename scoring is a line-similarity
+      approximation vs C's `diffcore-rename` for post-edit renames;
+      `--diff-filter` lowercase is implemented as exclude (C's lowercase
+      is undocumented/unsupported); `status` field for `T` (typechange)
+      is classified from mode changes.
+
 ## B. Test infrastructure not yet built
 
 All defined in `docs/plan/test-infrastructure.md`; none implemented yet:
