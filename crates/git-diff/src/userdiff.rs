@@ -8,6 +8,13 @@ pub struct UserdiffDriver {
     pub is_icase: bool,
 }
 
+/// A dynamic driver created from config or gitattributes (not built-in).
+pub struct DynamicDriver {
+    pub name: String,
+    pub funcname: Option<String>,
+    pub is_icase: bool,
+}
+
 /// The built-in userdiff drivers, matching C git's `builtin_drivers` exactly.
 /// Each entry has a name and optionally a multi-line pattern representing funcname regexes.
 /// In C git, these pattern strings can contain multiple regexes separated by `\n`.
@@ -214,7 +221,7 @@ pub const BUILTIN_DRIVERS: &[UserdiffDriver] = &[
 ];
 
 pub struct CompiledDriver {
-    pub name: &'static str,
+    pub name: String,
     patterns: Vec<(Regex, bool)>, // (regex, negate)
 }
 
@@ -238,7 +245,7 @@ impl CompiledDriver {
             }
         }
         CompiledDriver {
-            name: driver.name,
+            name: driver.name.to_string(),
             patterns,
         }
     }
@@ -289,4 +296,148 @@ pub fn find_default_match(line: &[u8]) -> Option<&[u8]> {
     } else {
         None
     }
+}
+
+/// Look up a builtin driver by name.
+pub fn find_builtin_driver(name: &str) -> Option<&UserdiffDriver> {
+    BUILTIN_DRIVERS.iter().find(|d| d.name == name)
+}
+
+/// Compile a dynamic driver (from config or attributes).
+pub fn compile_dynamic_driver(driver: DynamicDriver) -> CompiledDriver {
+    let mut patterns = Vec::new();
+    if let Some(funcname) = driver.funcname {
+        for line in funcname.lines() {
+            let (pat, negate) = if line.starts_with('!') {
+                (&line[1..], true)
+            } else {
+                (line, false)
+            };
+            let mut builder = RegexBuilder::new(pat);
+            builder.case_insensitive(driver.is_icase);
+            if let Ok(re) = builder.build() {
+                patterns.push((re, negate));
+            }
+        }
+    }
+    CompiledDriver {
+        name: driver.name,
+        patterns,
+    }
+}
+
+/// Convert a git wildmatch pattern (like `*.py` or `cpp-*`) to a regex.
+/// Supports `*` (any chars except `/`), `?` (any single char except `/`), and `**` (any chars including `/`).
+fn wildmatch_to_regex(pattern: &str) -> String {
+    let mut regex = String::new();
+    regex.push('^');
+    let mut chars = pattern.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '*' => {
+                if chars.peek() == Some(&'*') {
+                    // ** matches anything including /
+                    chars.next(); // consume second *
+                    regex.push_str(".*");
+                } else {
+                    // * matches anything except /
+                    regex.push_str("[^/]*");
+                }
+            }
+            '?' => {
+                // ? matches any single char except /
+                regex.push_str("[^/]");
+            }
+            c if c == '.' || c == '+' || c == '(' || c == ')' || c == '[' || c == ']' || c == '{' || c == '}' || c == '|' || c == '^' || c == '$' || c == '\\' => {
+                regex.push('\\');
+                regex.push(c);
+            }
+            c => regex.push(c),
+        }
+    }
+    regex.push('$');
+    regex
+}
+
+/// Parse .gitattributes content and find the diff driver for a given path.
+/// Returns the driver name if found.
+pub fn find_driver_from_gitattributes(path: &str, gitattributes: &str) -> Option<String> {
+    let mut driver_name = None;
+    for line in gitattributes.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        // Split by whitespace: pattern attr1 attr2 ...
+        let mut parts = line.split_whitespace();
+        let Some(pattern) = parts.next() else { continue };
+        
+        // Convert pattern to regex
+        let regex_str = wildmatch_to_regex(pattern);
+        let Ok(re) = RegexBuilder::new(&regex_str).build() else { continue };
+        
+        if !re.is_match(path.as_bytes()) {
+            continue;
+        }
+        
+        // Check attributes for diff=<name>
+        for attr in parts {
+            if let Some(name) = attr.strip_prefix("diff=") {
+                driver_name = Some(name.to_string());
+            }
+        }
+    }
+    driver_name
+}
+
+/// Find driver by file extension (fallback if no .gitattributes match).
+pub fn find_driver_by_extension(path: &str) -> Option<&'static str> {
+    let ext = path.rsplit('.').next()?;
+    match ext {
+        "py" => Some("python"),
+        "rs" => Some("rust"),
+        "c" | "h" => Some("cpp"),
+        "cpp" | "cc" | "cxx" | "c++" | "hpp" | "hh" | "hxx" | "h++" => Some("cpp"),
+        "java" => Some("java"),
+        "kt" | "kts" => Some("kotlin"),
+        "go" => Some("golang"),
+        "js" | "jsx" | "ts" | "tsx" => Some("javascript"),
+        "html" | "htm" => Some("html"),
+        "css" | "scss" | "sass" | "less" => Some("css"),
+        "sh" | "bash" => Some("bash"),
+        "rb" => Some("ruby"),
+        "pl" | "pm" => Some("perl"),
+        "php" => Some("php"),
+        "cs" => Some("csharp"),
+        "swift" => Some("swift"),
+        _ => None,
+    }
+}
+
+/// Resolve the driver for a given path.
+/// Priority:
+/// 1. .gitattributes diff=<name> (if provided)
+/// 2. File extension fallback
+/// 3. None (uses default def_ff)
+pub fn resolve_driver(
+    path: &str,
+    gitattributes: Option<&str>,
+) -> Option<CompiledDriver> {
+    // Try .gitattributes first
+    if let Some(attrs) = gitattributes {
+        if let Some(driver_name) = find_driver_from_gitattributes(path, attrs) {
+            if let Some(driver) = find_builtin_driver(&driver_name) {
+                return Some(CompiledDriver::compile(driver));
+            }
+        }
+    }
+    
+    // Fallback: extension-based
+    if let Some(driver_name) = find_driver_by_extension(path) {
+        if let Some(driver) = find_builtin_driver(driver_name) {
+            return Some(CompiledDriver::compile(driver));
+        }
+    }
+    
+    None
 }
