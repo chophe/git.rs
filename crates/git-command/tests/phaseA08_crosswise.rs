@@ -146,3 +146,69 @@ fn diff_exit_code_semantics() {
     // Differences exit 1.
     check(&dir, &["diff", "--exit-code", "HEAD", "--", "f.txt"]);
 }
+
+/// A second fixture with two commits for `diff-tree` tree-vs-tree checks.
+fn build_two_commit_fixture() -> Option<PathBuf> {
+    let g = git()?;
+    let dir = tempdir();
+    let env = [
+        ("GIT_AUTHOR_NAME", "T"),
+        ("GIT_AUTHOR_EMAIL", "t@example.com"),
+        ("GIT_COMMITTER_NAME", "T"),
+        ("GIT_COMMITTER_EMAIL", "t@example.com"),
+    ];
+    let commit = |msg: &str, date: &str| {
+        let mut c = Command::new(g);
+        c.args(["commit", "-q", "--allow-empty", "-m", msg]);
+        for (k, v) in env {
+            c.env(k, v);
+        }
+        c.env("GIT_AUTHOR_DATE", date).env("GIT_COMMITTER_DATE", date);
+        assert!(c.current_dir(&dir).status().unwrap().success());
+    };
+    let run = |args: &[&str]| {
+        let st = Command::new(g).args(args).current_dir(&dir).status().unwrap();
+        assert!(st.success());
+    };
+    run(&["init", "-q", "-b", "main"]);
+    std::fs::write(dir.join("f.txt"), b"a\nb\nc\n").unwrap();
+    std::fs::write(dir.join("g.txt"), b"x\n").unwrap();
+    std::fs::write(dir.join("bin.dat"), [0u8, 1, 2, 0, 3].as_slice()).unwrap();
+    run(&["add", "."]);
+    commit("one", "2020-01-01 10:00:00 +0000");
+
+    std::fs::write(dir.join("f.txt"), b"a\nB\nc\nd").unwrap();
+    run(&["mv", "g.txt", "h.txt"]);
+    std::fs::write(dir.join("bin.dat"), [0u8, 9, 0].as_slice()).unwrap();
+    run(&["add", "."]);
+    commit("two", "2020-01-01 10:01:00 +0000");
+    Some(dir)
+}
+
+#[test]
+fn diff_tree_exit_codes() {
+    if git().is_none() {
+        return;
+    }
+    let dir = build_two_commit_fixture().unwrap();
+    // Plain diff-tree exits 0 even with differences (plumbing default).
+    check(&dir, &["diff-tree", "HEAD~1", "HEAD"]);
+    check(&dir, &["diff-tree", "-r", "HEAD~1", "HEAD"]);
+    // --exit-code: normal output, exit 1 on differences.
+    check(&dir, &["diff-tree", "--exit-code", "HEAD~1", "HEAD"]);
+    check(&dir, &["diff-tree", "--exit-code", "HEAD", "HEAD"]);
+    // --quiet: no output at all, exit status only.
+    check(&dir, &["diff-tree", "--quiet", "HEAD~1", "HEAD"]);
+    check(&dir, &["diff-tree", "--quiet", "HEAD", "HEAD"]);
+}
+
+#[test]
+fn diff_quiet_suppresses_output() {
+    if git().is_none() {
+        return;
+    }
+    let dir = build_fixture().unwrap();
+    // --quiet prints nothing and exits 1 on differences, 0 when clean.
+    check(&dir, &["diff", "--quiet", "HEAD"]);
+    check(&dir, &["diff", "--quiet", "HEAD", "--", "g.txt"]);
+}

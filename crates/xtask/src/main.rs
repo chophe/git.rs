@@ -139,6 +139,10 @@ fn suites() -> &'static [(&'static str, &'static [&'static str])] {
             "phaseA06-crosswise",
             &["test", "-p", "git-command", "--test", "phaseA06_crosswise"],
         ),
+        (
+            "phaseA08-crosswise",
+            &["test", "-p", "git-command", "--test", "phaseA08_crosswise"],
+        ),
     ]
 }
 
