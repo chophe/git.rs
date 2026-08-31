@@ -598,7 +598,7 @@ fn no_index_diff(a_path_raw: &str, b_path_raw: &str, out: &mut dyn Write) -> Res
     } else {
         writeln!(out, "--- a/{a_path}").map_err(|e| CommandError::fatal(e.to_string()))?;
         writeln!(out, "+++ b/{b_path}").map_err(|e| CommandError::fatal(e.to_string()))?;
-        out.write_all(&git_diff::diff_blobs(&a, &b))
+        out.write_all(&git_diff::diff_blobs_ctx(&a, &b, 3, None))
             .map_err(|e| CommandError::fatal(e.to_string()))?;
     }
     if a == b {
