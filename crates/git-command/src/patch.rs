@@ -472,7 +472,7 @@ pub fn render_change_patch_ctx(
             }
             writeln!(out, "--- a/{old_path}").map_err(|e| CommandError::fatal(e.to_string()))?;
             writeln!(out, "+++ b/{new_path}").map_err(|e| CommandError::fatal(e.to_string()))?;
-            out.extend_from_slice(&git_diff::diff_blobs_ctx(&old, &new, context));
+            out.extend_from_slice(&git_diff::diff_blobs_ctx(&old, &new, context, None));
         }
         'M' | 'T' => {
             if c.old_mode != c.new_mode {
@@ -499,7 +499,7 @@ new mode {}", mode6(&c.old_mode), mode6(&c.new_mode))
             }
             writeln!(out, "--- a/{old_path}").map_err(|e| CommandError::fatal(e.to_string()))?;
             writeln!(out, "+++ b/{new_path}").map_err(|e| CommandError::fatal(e.to_string()))?;
-            out.extend_from_slice(&git_diff::diff_blobs_ctx(&old, &new, context));
+            out.extend_from_slice(&git_diff::diff_blobs_ctx(&old, &new, context, None));
         }
         _ => {}
     }
