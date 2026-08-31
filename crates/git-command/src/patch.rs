@@ -12,11 +12,10 @@ use git_hash::Oid;
 use git_odb::Odb;
 
 pub fn mode6(mode: &Option<String>) -> String {
-    // C git renders an absent mode as six zeros in raw output, and tree
-    // modes (040000) without the leading zero.
+    // C git renders every mode zero-padded to six octal digits, and an
+    // absent mode as six zeros.
     match mode {
-        Some(m) if m == "040000" => "40000".to_string(),
-        Some(m) => m.clone(),
+        Some(m) => format!("{m:0>6}"),
         None => "000000".to_string(),
     }
 }
