@@ -427,7 +427,7 @@ pub fn render_change_patch_ctx(
             out.extend_from_slice(b"--- /dev/null
 ");
             writeln!(out, "+++ b/{new_path}").map_err(|e| CommandError::fatal(e.to_string()))?;
-            out.extend_from_slice(&git_diff::diff_blobs_ctx(b"", &new, context));
+            out.extend_from_slice(&git_diff::diff_blobs_ctx(b"", &new, context, None));
         }
         'D' => {
             let mode = mode6(&c.old_mode);
@@ -444,7 +444,7 @@ pub fn render_change_patch_ctx(
             writeln!(out, "--- a/{old_path}").map_err(|e| CommandError::fatal(e.to_string()))?;
             out.extend_from_slice(b"+++ /dev/null
 ");
-            out.extend_from_slice(&git_diff::diff_blobs_ctx(&old, b"", context));
+            out.extend_from_slice(&git_diff::diff_blobs_ctx(&old, b"", context, None));
         }
         'R' => {
             let score = c.score.unwrap_or(0) * 100 / git_diff::MAX_SCORE;
