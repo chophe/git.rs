@@ -13,7 +13,7 @@ where it landed, and how it was verified. Newest entries at the bottom.
 | 2026-08-29 | A5 `rev-parse` completion | DONE (subset) |
 | 2026-08-29 | A7 pretty-printing engine | DONE (core) |
 | 2026-08-29 | A6 `rev-list`/`log` options | DONE (core) |
-| 2026-08-29 | A8 diff options completion | planned |
+| 2026-08-29 | A8 diff options completion | DONE |
 | 2026-08-29 | A9 userdiff hunk headers | planned |
 | 2026-08-29 | A10 `count-objects -v` close-out | DONE |
 | 2026-08-29 | A11 `.gitignore` + attributes engine | planned |
@@ -195,9 +195,42 @@ Implemented per [06-rev-list-log-options.md](06-rev-list-log-options.md).
   ~11 log option combinations, byte-identical vs C git; topo proptest;
   full workspace green; scoreboard updated.
 
-### A8 — diff options completion
+### A8 — diff options completion — DONE
 
 Implemented per [08-diff-options.md](08-diff-options.md).
+
+- `git-command/src/patch.rs`: rewritten renderers — `render_stat` (80-col
+  width, scale_linear, Bin handling, number_width=3 for binaries),
+  `render_shortstat`, `render_numstat` (binary rows `-\t-\tpath`),
+  `render_name_line`, `render_raw` (abbreviated 7-char oids, dirty new-side
+  as `0000000`), `render_summary`, `render_change_patch_ctx` (rename blocks,
+  binary footers, mode-change lines, `-U`). `BlobSource` bridges odb +
+  synthetic blobs; `mode6` zero-pads modes to six digits.
+- `git-command/src/diff.rs`: option parsing (`--stat`, `--shortstat`,
+  `--numstat`, `--name-only`, `--name-status`, `--raw`, `--summary`,
+  `--patch-with-stat`, `-U<n>`, `-s`, `--cached/--staged`,
+  `-M/--find-renames[=n]`, `--no-renames`, `--diff-filter=`,
+  `--exit-code/--quiet`, `--no-index`), sources (worktree synthetic tree
+  from `git-index` + stat-match reuse of index oids; index tree from flat
+  entries; HEAD/tree resolution), delta blobs in an `extra` map, rename
+  detection (exact + line-similarity), path limiting. `--exit-code`/
+  `--quiet` now exit 1 only when changes exist (C git's `finish`
+  semantics); `--quiet` suppresses all output.
+- `git-command/src/diff_tree.rs`: `--exit-code`/`--quiet` (exit 1 on
+  differences, `--quiet` suppresses output), commit-ish → tree resolution.
+- `git-diff/src/unified.rs`: `render_unified_ctx` with `-U<n>`, the
+  `\ No newline at end of file` marker, section-context in `@@` headers,
+  zero-count hunk ranges.
+- `git-diff/src/tree.rs`: `Change` gained `old_path`/`new_path`/`score`;
+  `MAX_SCORE = 60000`.
+- `git-index`: `Default` impl for `Index`.
+- Verification: crosswise suite `phaseA08_crosswise.rs` (registered
+  `phaseA08-crosswise`) — byte-identical vs system git across the diff
+  option matrix, diff-tree exit codes, and `--quiet` suppression; full
+  workspace green (55 test binaries); scoreboard baseline updated.
+- Deferred (recorded in FOLLOWUPS.md §A14): word-diff, `--color`,
+  `--patience`/`--histogram`, `--dirstat`, whitespace family, `--relative`,
+  `-S`/`-G` pickaxe, stat-width 80 columns.
 
 ### A9 — userdiff hunk headers
 
