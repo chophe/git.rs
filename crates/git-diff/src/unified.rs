@@ -2,6 +2,7 @@
 //! userdiff function-context driver (e.g. plain text).
 
 use super::myers::{split_lines, Op};
+use std::fmt::Write as _;
 
 /// Number of context lines around each change (git's default).
 pub const CONTEXT: usize = 3;
@@ -13,7 +14,6 @@ pub fn render_unified(a: &[&[u8]], b: &[&[u8]], ops: &[Op]) -> Vec<u8> {
 
 /// Like [`render_unified`] with an explicit context width (`-U<n>`).
 pub fn render_unified_ctx(a: &[&[u8]], b: &[&[u8]], ops: &[Op], context: usize) -> Vec<u8> {
-    let context = context;
     // Find runs of change ops.
     let mut extents: Vec<(usize, usize)> = Vec::new();
     let mut k = 0usize;
@@ -29,7 +29,7 @@ pub fn render_unified_ctx(a: &[&[u8]], b: &[&[u8]], ops: &[Op], context: usize) 
         }
     }
 
-    // Merge extents separated by a gap of at most 2*CONTEXT kept lines.
+    // Merge extents separated by a gap of at most 2*context kept lines.
     let mut merged: Vec<(usize, usize)> = Vec::new();
     for (s, e) in extents {
         if let Some(last) = merged.last_mut() {
@@ -71,10 +71,11 @@ pub fn render_unified_ctx(a: &[&[u8]], b: &[&[u8]], ops: &[Op], context: usize) 
             }
         }
 
-        // Hunk header: `@@ -a,b +c,d @@`, omitting the count when it is 1 and
-        // using a start of 0 when the side is empty.
-        let old_start = if old_count == 0 { 0 } else { old_pos + 1 };
-        let new_start = if new_count == 0 { 0 } else { new_pos + 1 };
+        // Hunk header: `@@ -a,b +c,d @@`; counts omitted when 1. For a
+        // side with zero lines the start points at the line just before
+        // (0 at file start), matching C git.
+        let old_start = if old_count == 0 { old_pos } else { old_pos + 1 };
+        let new_start = if new_count == 0 { new_pos } else { new_pos + 1 };
         let mut hdr = String::new();
         let _ = write!(hdr, "@@ -{old_start}");
         if old_count != 1 {
@@ -84,7 +85,13 @@ pub fn render_unified_ctx(a: &[&[u8]], b: &[&[u8]], ops: &[Op], context: usize) 
         if new_count != 1 {
             let _ = write!(hdr, ",{new_count}");
         }
-        hdr.push_str(" @@\n");
+        // Section header: the last kept line before the hunk, appended
+        // after the closing `@@` (C git prints it regardless of width).
+        hdr.push_str(" @@");
+        if let Some(ctx) = last_context_line(a, &ops[..lo]) {
+            let _ = write!(hdr, " {}", String::from_utf8_lossy(ctx).trim_end_matches('\n'));
+        }
+        hdr.push('\n');
         out.extend_from_slice(hdr.as_bytes());
 
         let (mut i, mut j) = (old_pos, new_pos);
@@ -118,6 +125,23 @@ pub fn render_unified_ctx(a: &[&[u8]], b: &[&[u8]], ops: &[Op], context: usize) 
     out
 }
 
+/// The raw content of the last kept (context) line preceding the hunk.
+fn last_context_line<'a>(a: &[&'a [u8]], ops: &[Op]) -> Option<&'a [u8]> {
+    let mut old_pos = 0usize;
+    let mut last_keep: Option<usize> = None;
+    for op in ops {
+        match op {
+            Op::Keep => {
+                old_pos += 1;
+                last_keep = Some(old_pos - 1);
+            }
+            Op::Delete => old_pos += 1,
+            Op::Insert => {}
+        }
+    }
+    last_keep.map(|i| a[i])
+}
+
 /// Produce a unified diff of two blobs.
 pub fn diff_blobs(old: &[u8], new: &[u8]) -> Vec<u8> {
     diff_blobs_ctx(old, new, CONTEXT)
@@ -130,8 +154,6 @@ pub fn diff_blobs_ctx(old: &[u8], new: &[u8], context: usize) -> Vec<u8> {
     let ops = super::myers::diff(&a, &b);
     render_unified_ctx(&a, &b, &ops, context)
 }
-
-use std::fmt::Write;
 
 #[cfg(test)]
 mod tests {
