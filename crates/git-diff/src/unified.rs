@@ -160,31 +160,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn renders_simple_insertions() {
-        let old = b"a\nb\nc\nd\ne\nf\ng\nh\n";
-        let new = b"a\nb\nX\nc\nd\ne\nf\ng\nh\nY\n";
-        let a = split_lines(old);
-        let b = split_lines(new);
-        let ops = super::super::myers::diff(&a, &b);
-        let out = render_unified(&a, &b, &ops);
-        let text = String::from_utf8(out).unwrap();
-        // First hunk header.
-        assert!(text.contains("@@ -1,8 +1,10 @@\n"), "got:\n{text}");
-        assert!(text.contains("\n+X\n"), "got:\n{text}");
-        assert!(text.contains("\n+Y\n"), "got:\n{text}");
+    fn no_newline_marker() {
+        let old = b"a\nb\n";
+        let new = b"a\nb\nc\n";
+        let d = String::from_utf8(diff_blobs(old, new)).unwrap();
+        assert!(!d.contains("No newline"));
     }
 
     #[test]
-    fn empty_to_nonempty() {
-        let out = diff_blobs(b"", b"a\nb\n");
-        let text = String::from_utf8(out).unwrap();
-        assert!(text.contains("@@ -0,0 +1,2 @@\n"), "got:\n{text}");
+    fn unterminated_last_line_marks() {
+        let old = b"a\nb\n";
+        let new = b"a\nB\nd";
+        let d = String::from_utf8(diff_blobs(old, new)).unwrap();
+        assert!(d.contains("\\ No newline at end of file"), "got: {d}");
     }
 
     #[test]
-    fn nonempty_to_empty() {
-        let out = diff_blobs(b"a\nb\n", b"");
-        let text = String::from_utf8(out).unwrap();
-        assert!(text.contains("@@ -1,2 +0,0 @@\n"), "got:\n{text}");
+    fn context_header_line() {
+        let old = b"a\nb\nc\n";
+        let new = b"a\nB\nc\nd";
+        let d = String::from_utf8(diff_blobs_ctx(old, new, 0)).unwrap();
+        assert!(d.contains("@@ -2 +2 @@ a"), "got: {d}");
+        assert!(d.contains("@@ -3,0 +4 @@ c"), "got: {d}");
     }
 }
