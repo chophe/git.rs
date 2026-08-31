@@ -32,6 +32,7 @@ struct Options {
     patch_with_stat: bool,
     context: usize,
     exit_code: bool,
+    quiet: bool,
     cached: bool,
     no_index: bool,
     find_renames: bool,
@@ -46,6 +47,7 @@ impl Default for Options {
             patch_with_stat: false,
             context: 3,
             exit_code: false,
+            quiet: false,
             cached: false,
             no_index: false,
             find_renames: true,
@@ -72,7 +74,12 @@ impl Command for Diff {
             }
             match a.as_str() {
                 "--no-index" => opts.no_index = true,
-                "--exit-code" | "--quiet" => opts.exit_code = true,
+                "--exit-code" => opts.exit_code = true,
+                "--quiet" => {
+                    // C git: quick implies exit_with_status.
+                    opts.quiet = true;
+                    opts.exit_code = true;
+                }
                 "--stat" => opts.output = Output::Stat,
                 "--shortstat" => opts.output = Output::ShortStat,
                 "--numstat" => opts.output = Output::NumStat,
@@ -139,8 +146,8 @@ impl Command for Diff {
         if revs.len() == 2 {
             let t1 = resolve_tree(&repo, &odb, &revs[0])?;
             let t2 = resolve_tree(&repo, &odb, &revs[1])?;
-            run_diff(&odb, &extra, Some(t1), t2, &paths, &opts, out, &HashSet::new())?;
-            return finish(opts.exit_code);
+            let has = run_diff(&odb, &extra, Some(t1), t2, &paths, &opts, out, &HashSet::new())?;
+            return finish(has, opts.exit_code);
         }
 
         let index_tree = build_index_tree(&index, &mut extra, algo);
@@ -158,13 +165,13 @@ impl Command for Diff {
             (Some(index_tree), work_tree)
         };
 
-        run_diff(&odb, &extra, old_tree, new_tree, &paths, &opts, out, &dirty)?;
-        finish(opts.exit_code)
+        let has = run_diff(&odb, &extra, old_tree, new_tree, &paths, &opts, out, &dirty)?;
+        finish(has, opts.exit_code)
     }
 }
 
-fn finish(exit_code: bool) -> Result<(), CommandError> {
-    if exit_code {
+fn finish(has_changes: bool, exit_code: bool) -> Result<(), CommandError> {
+    if exit_code && has_changes {
         Err(CommandError::silent(1))
     } else {
         Ok(())
@@ -176,7 +183,7 @@ fn parse_percent(s: &str) -> u32 {
     (n.min(100) * git_diff::MAX_SCORE) / 100
 }
 
-fn resolve_tree(repo: &git_core::Repository, odb: &Odb, rev: &str) -> Result<Oid, CommandError> {
+pub(crate) fn resolve_tree(repo: &git_core::Repository, odb: &Odb, rev: &str) -> Result<Oid, CommandError> {
     let oid = crate::resolve_arg(repo, rev)?;
     let obj = odb.read(&oid).map_err(|e| CommandError::error(e.to_string()))?;
     if obj.kind == ObjectKind::Tree {
@@ -200,7 +207,7 @@ fn run_diff(
     opts: &Options,
     out: &mut dyn Write,
     dirty: &HashSet<Oid>,
-) -> Result<(), CommandError> {
+) -> Result<bool, CommandError> {
     let algo = odb.algorithm();
     let tree_entries = |oid: Option<Oid>| -> Vec<git_object::TreeEntry> {
         let Some(oid) = oid else { return Vec::new() };
@@ -263,7 +270,13 @@ fn run_diff(
     }
 
     if changes.is_empty() {
-        return Ok(());
+        return Ok(false);
+    }
+
+    // C git's `--quiet` (DIFF_FORMAT_NO_OUTPUT): suppress all output but
+    // still report the exit status.
+    if opts.quiet {
+        return Ok(true);
     }
 
     let src = BlobSource { odb, extra };
@@ -308,7 +321,7 @@ fn run_diff(
         }
         Output::Stat | Output::None => {}
     }
-    Ok(())
+    Ok(true)
 }
 
 /// Exact-match then similarity-based rename detection over A/D pairs.
@@ -530,14 +543,8 @@ fn build_worktree_tree(
     let work_tree: &Path = repo.work_tree.as_deref().unwrap_or(Path::new("."));
     let mut entries: Vec<(String, u32, Oid)> = Vec::new();
     let mut dirty: HashSet<Oid> = HashSet::new();
-    if std::env::var_os("DIFF_DEBUG").is_some() {
-        eprintln!("wt={:?} entries={}", work_tree.display(), index.entries.len());
-    }
     for e in &index.entries {
         let path: PathBuf = work_tree.join(&e.name);
-        if std::env::var_os("DIFF_DEBUG").is_some() {
-            eprintln!("  {} -> {:?} exists={}", e.name, path, path.exists());
-        }
         let meta = match std::fs::metadata(&path) {
             Ok(m) => m,
             Err(_) => continue, // deleted in the worktree
