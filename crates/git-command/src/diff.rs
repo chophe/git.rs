@@ -146,7 +146,7 @@ impl Command for Diff {
         if revs.len() == 2 {
             let t1 = resolve_tree(&repo, &odb, &revs[0])?;
             let t2 = resolve_tree(&repo, &odb, &revs[1])?;
-            let has = run_diff(&odb, &extra, Some(t1), t2, &paths, &opts, out, &HashSet::new())?;
+            let has = run_diff(&odb, &extra, Some(t1), t2, &paths, &opts, out, &HashSet::new(), repo.work_tree.as_deref())?;
             return finish(has, opts.exit_code);
         }
 
@@ -165,7 +165,7 @@ impl Command for Diff {
             (Some(index_tree), work_tree)
         };
 
-        let has = run_diff(&odb, &extra, old_tree, new_tree, &paths, &opts, out, &dirty)?;
+        let has = run_diff(&odb, &extra, old_tree, new_tree, &paths, &opts, out, &dirty, repo.work_tree.as_deref())?;
         finish(has, opts.exit_code)
     }
 }
@@ -207,6 +207,7 @@ fn run_diff(
     opts: &Options,
     out: &mut dyn Write,
     dirty: &HashSet<Oid>,
+    worktree: Option<&std::path::Path>,
 ) -> Result<bool, CommandError> {
     let algo = odb.algorithm();
     let tree_entries = |oid: Option<Oid>| -> Vec<git_object::TreeEntry> {
@@ -258,6 +259,12 @@ fn run_diff(
         }
     }
 
+    // Read .gitattributes from worktree if available
+    let gitattributes = worktree.and_then(|wt| {
+        let path = wt.join(".gitattributes");
+        std::fs::read_to_string(path).ok()
+    });
+
     if let Some((set, exclude)) = &opts.diff_filter {
         changes.retain(|c| {
             let keep = set.contains(&c.status);
@@ -289,7 +296,8 @@ fn run_diff(
     match opts.output {
         Output::Patch => {
             for c in &changes {
-                let p = patch::render_change_patch_ctx(c, &src, opts.context)?;
+                let driver = git_diff::resolve_driver(&c.path, gitattributes.as_deref());
+                let p = patch::render_change_patch_ctx(c, &src, opts.context, driver.as_ref())?;
                 out.write_all(&p).map_err(|e| CommandError::fatal(e.to_string()))?;
             }
         }
