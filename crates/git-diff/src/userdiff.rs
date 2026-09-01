@@ -390,35 +390,11 @@ pub fn find_driver_from_gitattributes(path: &str, gitattributes: &str) -> Option
     driver_name
 }
 
-/// Find driver by file extension (fallback if no .gitattributes match).
-pub fn find_driver_by_extension(path: &str) -> Option<&'static str> {
-    let ext = path.rsplit('.').next()?;
-    match ext {
-        "py" => Some("python"),
-        "rs" => Some("rust"),
-        "c" | "h" => Some("cpp"),
-        "cpp" | "cc" | "cxx" | "c++" | "hpp" | "hh" | "hxx" | "h++" => Some("cpp"),
-        "java" => Some("java"),
-        "kt" | "kts" => Some("kotlin"),
-        "go" => Some("golang"),
-        "js" | "jsx" | "ts" | "tsx" => Some("javascript"),
-        "html" | "htm" => Some("html"),
-        "css" | "scss" | "sass" | "less" => Some("css"),
-        "sh" | "bash" => Some("bash"),
-        "rb" => Some("ruby"),
-        "pl" | "pm" => Some("perl"),
-        "php" => Some("php"),
-        "cs" => Some("csharp"),
-        "swift" => Some("swift"),
-        _ => None,
-    }
-}
-
 /// Resolve the driver for a given path.
-/// Priority:
-/// 1. .gitattributes diff=<name> (if provided)
-/// 2. File extension fallback
-/// 3. None (uses default def_ff)
+/// C git selects userdiff drivers ONLY via the `diff` attribute
+/// (`.gitattributes` / `$GIT_DIR/info/attributes`); there is no
+/// extension-based fallback. `resolve_driver` mirrors that: without a
+/// matching `diff=<name>` attribute the default `def_ff` heuristic applies.
 pub fn resolve_driver(
     path: &str,
     gitattributes: Option<&str>,
@@ -429,13 +405,6 @@ pub fn resolve_driver(
             if let Some(driver) = find_builtin_driver(&driver_name) {
                 return Some(CompiledDriver::compile(driver));
             }
-        }
-    }
-    
-    // Fallback: extension-based
-    if let Some(driver_name) = find_driver_by_extension(path) {
-        if let Some(driver) = find_builtin_driver(driver_name) {
-            return Some(CompiledDriver::compile(driver));
         }
     }
     
