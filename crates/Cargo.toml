@@ -17,6 +17,7 @@ members = [
     "git-index",
     "git-refs",
     "git-merge",
+    "git-attributes",
     "xtask",
 ]
 

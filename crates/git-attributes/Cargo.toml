@@ -1,0 +1,16 @@
+[package]
+name = "git-attributes"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Git ignore and attributes engine"
+repository = "https://github.com/git/git.rs"
+
+[dependencies]
+git-core = { path = "../git-core" }
+git-config = { path = "../git-config" }
+anyhow = "1.0"
+thiserror = "1.0"
+
+[dev-dependencies]
+proptest = "1.0"
