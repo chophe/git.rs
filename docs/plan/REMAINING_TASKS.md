@@ -8,12 +8,18 @@ Generated from `docs/plan/FOLLOWUPS.md` and `docs/plan/conversion-plan.md`.
 
 | Item | Status | Description | Crate/Module | Test Gate |
 |------|--------|-------------|--------------|-----------|
+| **A1** | ✅ DONE | Collision-detecting SHA-1 (sha1dc) | `git-hash` | `t/t0013` |
+| **A2** | ✅ DONE | `--git-dir`/`--work-tree` threading through all commands | `git-command` (RepoContext) | existing suites |
+| **A3** | ✅ DONE | `cat-file --batch` / `--batch-check` / `%(format)` | `git-command/cat_file.rs` | `t/t1006` |
 | **A4** | ❌ NOT DONE | Pack delta compression in `pack-objects` | `git-odb/pack` | `pack_crosswise` + `git verify-pack` |
+| **A5** | ✅ DONE | Abbreviation resolution (short OIDs, refs, `HEAD~n`) | `git-revision` + `git-command` | `t/t1514`, `t/t1400` |
 | **A6** | ❌ NOT DONE | Local-timezone / calendar parity in `git-date` | `git-date` | `t/t0006` |
 | **A7** | ❌ NOT DONE | Ident offset uses UTC (depends on A6) | `git-date`, `git-command/ident.rs` | `t/t0006` |
 | **A8** | ✅ DONE | Diff/patch engine completion | `git-diff`, `git-command/diff.rs`, `diff_tree.rs` | `phaseA08_crosswise` |
 | **A9** | ✅ DONE | Hunk-header function context (userdiff drivers) | `git-diff` | `t/t4018`, `phaseA09_crosswise` |
+| **A10** | ✅ DONE | `count-objects -v` real sizes | `git-command/count_objects.rs` | `t/t1450` |
 | **A11** | ❌ NOT DONE | `.gitignore` + attributes engine | new `git-ignore` (or `git-index`) | `t/t0007`, `t/t0008` |
+| **A12** | ✅ DONE | Local timezone for dates + idents (fixes UTC-only) | `git-date`, `git-command/ident.rs` | `t/t0006` |
 | **A13** | ❌ NOT DONE | Delta compression in `pack-objects` write path | `git-odb/pack` | `pack_crosswise` + `git verify-pack` |
 
 **Deferred from A8 (explicitly noted in FOLLOWUPS):**
