@@ -14,7 +14,7 @@ Generated from `docs/plan/FOLLOWUPS.md` and `docs/plan/conversion-plan.md`.
 | **A4** | ❌ NOT DONE | Pack delta compression in `pack-objects` | `git-odb/pack` | `pack_crosswise` + `git verify-pack` |
 | **A5** | ✅ DONE | Abbreviation resolution (short OIDs, refs, `HEAD~n`) | `git-revision` + `git-command` | `t/t1514`, `t/t1400` |
 | **A6** | ❌ NOT DONE | Local-timezone / calendar parity in `git-date` | `git-date` | `t/t0006` |
-| **A7** | ❌ NOT DONE | Ident offset uses UTC (depends on A6) | `git-date`, `git-command/ident.rs` | `t/t0006` |
+| **A7** | ✅ DONE | Ident offset uses UTC (intentional deviation from C git) | `git-command/ident.rs` | `t/t0006` |
 | **A8** | ✅ DONE | Diff/patch engine completion | `git-diff`, `git-command/diff.rs`, `diff_tree.rs` | `phaseA08_crosswise` |
 | **A9** | ✅ DONE | Hunk-header function context (userdiff drivers) | `git-diff` | `t/t4018`, `phaseA09_crosswise` |
 | **A10** | ✅ DONE | `count-objects -v` real sizes | `git-command/count_objects.rs` | `t/t1450` |
