@@ -402,6 +402,7 @@ pub fn render_change_patch_ctx(
     c: &git_diff::Change,
     src: &BlobSource,
     context: usize,
+    driver: Option<&git_diff::CompiledDriver>,
 ) -> Result<Vec<u8>, CommandError> {
     let mut out: Vec<u8> = Vec::new();
     let (old_path, new_path) = match (&c.old_path, &c.new_path) {
@@ -427,7 +428,7 @@ pub fn render_change_patch_ctx(
             out.extend_from_slice(b"--- /dev/null
 ");
             writeln!(out, "+++ b/{new_path}").map_err(|e| CommandError::fatal(e.to_string()))?;
-            out.extend_from_slice(&git_diff::diff_blobs_ctx(b"", &new, context, None));
+            out.extend_from_slice(&git_diff::diff_blobs_ctx(b"", &new, context, driver));
         }
         'D' => {
             let mode = mode6(&c.old_mode);
@@ -444,7 +445,7 @@ pub fn render_change_patch_ctx(
             writeln!(out, "--- a/{old_path}").map_err(|e| CommandError::fatal(e.to_string()))?;
             out.extend_from_slice(b"+++ /dev/null
 ");
-            out.extend_from_slice(&git_diff::diff_blobs_ctx(&old, b"", context, None));
+            out.extend_from_slice(&git_diff::diff_blobs_ctx(&old, b"", context, driver));
         }
         'R' => {
             let score = c.score.unwrap_or(0) * 100 / git_diff::MAX_SCORE;
@@ -472,7 +473,7 @@ pub fn render_change_patch_ctx(
             }
             writeln!(out, "--- a/{old_path}").map_err(|e| CommandError::fatal(e.to_string()))?;
             writeln!(out, "+++ b/{new_path}").map_err(|e| CommandError::fatal(e.to_string()))?;
-            out.extend_from_slice(&git_diff::diff_blobs_ctx(&old, &new, context, None));
+            out.extend_from_slice(&git_diff::diff_blobs_ctx(&old, &new, context, driver));
         }
         'M' | 'T' => {
             if c.old_mode != c.new_mode {
@@ -499,7 +500,7 @@ new mode {}", mode6(&c.old_mode), mode6(&c.new_mode))
             }
             writeln!(out, "--- a/{old_path}").map_err(|e| CommandError::fatal(e.to_string()))?;
             writeln!(out, "+++ b/{new_path}").map_err(|e| CommandError::fatal(e.to_string()))?;
-            out.extend_from_slice(&git_diff::diff_blobs_ctx(&old, &new, context, None));
+            out.extend_from_slice(&git_diff::diff_blobs_ctx(&old, &new, context, driver));
         }
         _ => {}
     }
@@ -510,7 +511,7 @@ new mode {}", mode6(&c.old_mode), mode6(&c.new_mode))
 pub fn render_change_patch(c: &git_diff::Change, odb: &Odb) -> Result<Vec<u8>, CommandError> {
     let empty = HashMap::new();
     let src = BlobSource { odb, extra: &empty };
-    render_change_patch_ctx(c, &src, 3)
+    render_change_patch_ctx(c, &src, 3, None)
 }
 
 /// Legacy numstat helper for callers without synthetic blobs.
