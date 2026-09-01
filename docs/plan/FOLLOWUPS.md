@@ -36,8 +36,8 @@ tested.
      `prune-packable` (loose also in a pack); `garbage`/`size-garbage`
      (unrecognized files in `objects/pack`). Crosswise-verified.
 
-6. **Local-timezone / calendar parity in `git-date`** — **NOT DONE** (see C).
-7. **Ident offset uses UTC** — **NOT DONE** (depends on A6).
+6. **DONE (A6/A12)** — Local-timezone / calendar parity in `git-date`.
+7. **DONE (A12)** — Ident offset uses local timezone (depends on A6).
 
 8. **`merge-base --is-ancestor`** — **DONE** (`merge_base.rs`), crosswise-verified
    (exit-code parity; fixed the reachability direction: A is reachable from B).
@@ -115,8 +115,9 @@ All defined in `docs/plan/test-infrastructure.md`; none implemented yet:
 
 ## C. Known deviations to revisit
 
-- **`git-date`**: UTC-only for tz-less inputs; month/year relative approx.
-  (see A6).
+- **DONE (A6/A12)** — `git-date`: local-timezone parsing, calendar-aware
+  month/year relative math, and ident offsets now use the local zone
+  (see `phase-a/12-local-timezone-dates.md`).
 - **`pack-objects`**: non-deltified packs (see A4).
 - **`hash-object`** outside a repo always hashes with SHA-1 (matches git
   default; fine, but confirm `-t`/`--stdin` parity against `t1007`).
