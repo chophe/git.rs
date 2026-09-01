@@ -9,13 +9,13 @@ use crate::CommandError;
 use git_core::Repository;
 use git_date::{parse, Timestamp};
 
-/// The current time with the local timezone offset.
+/// The current time in UTC (offset 0).
 pub fn now_utc() -> Timestamp {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
-    Timestamp::new(secs, git_date::tz::local_offset(secs))
+    Timestamp::new(secs, 0)
 }
 
 /// Resolve an author or committer identity line like
