@@ -1,4 +1,4 @@
-//! Delta application (`patch-delta.c`).
+//! Delta application (`patch-delta.c`) and creation (`diff-delta.c`).
 //!
 //! A delta blob is: source-size varint, result-size varint, then a series of
 //! copy (`0x80` set) and insert instructions.
@@ -148,5 +148,38 @@ mod tests {
         // Empty command byte.
         let delta = [1u8, 1, 0x00];
         assert_eq!(apply_delta(b"a", &delta), Err(PackError::BadDelta));
+    }
+}
+
+#[cfg(test)]
+mod creation_tests {
+    use super::*;
+
+    #[test]
+    fn create_delta_simple() {
+        // Create a delta from "hello world" to "hello !orld!!"
+        let base = b"hello world";
+        let target = b"hello !orld!!";
+        let delta = create_delta(base, target, usize::MAX).unwrap();
+        let reconstructed = apply_delta(base, &delta).unwrap();
+        assert_eq!(reconstructed, target);
+    }
+
+    #[test]
+    fn create_delta_identical() {
+        let base = b"same data";
+        let target = b"same data";
+        let delta = create_delta(base, target, usize::MAX).unwrap();
+        let reconstructed = apply_delta(base, &delta).unwrap();
+        assert_eq!(reconstructed, target);
+    }
+
+    #[test]
+    fn create_delta_empty_target() {
+        let base = b"hello";
+        let target = b"";
+        let delta = create_delta(base, target, usize::MAX).unwrap();
+        let reconstructed = apply_delta(base, &delta).unwrap();
+        assert_eq!(reconstructed, target);
     }
 }
