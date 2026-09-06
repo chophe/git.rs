@@ -8,6 +8,8 @@
 
 pub mod apply;
 pub mod cat_file;
+pub mod check_attr;
+pub mod check_ignore;
 pub mod commit_graph;
 pub mod commit_tree;
 pub mod count_objects;
@@ -358,6 +360,8 @@ pub fn dispatch_with(
         "merge-base" => &merge_base::MergeBase,
         "merge-file" => &merge_file::MergeFile,
         "fsck" => &fsck::Fsck,
+        "check-ignore" => &check_ignore::CheckIgnore,
+        "check-attr" => &check_attr::CheckAttr,
         "apply" => &apply::Apply,
         "index-pack" => &index_pack::IndexPack,
         "tag" => &show_ref::Tag,

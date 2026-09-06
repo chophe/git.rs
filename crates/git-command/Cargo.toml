@@ -19,6 +19,7 @@ git-diff = { path = "../git-diff" }
 git-index = { path = "../git-index" }
 git-refs = { path = "../git-refs" }
 git-merge = { path = "../git-merge" }
+git-attributes = { path = "../git-attributes" }
 
 [dev-dependencies]
 git-config = { path = "../git-config" }
