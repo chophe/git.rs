@@ -5,8 +5,6 @@
 //! per-directory stacking, and trailing-slash dir-only rules.
 
 use crate::wildmatch;
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 
 /// Pattern flags matching C Git's PATTERN_FLAG_* values
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,7 +34,7 @@ impl PatternFlags {
 }
 
 /// A single ignore pattern
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IgnorePattern {
     /// The pattern string
     pub pattern: String,
@@ -81,20 +79,8 @@ pub struct IgnoreEngine {
     dir_patterns: Vec<PatternList>,
     /// Command-line patterns
     cmdline_patterns: Vec<PatternList>,
-    /// Stack of per-directory exclude states
-    exclude_stack: Vec<ExcludeStackEntry>,
-    /// Current base path
-    basebuf: String,
-    /// Last matching pattern (cached)
-    last_pattern: Option<IgnorePattern>,
     /// Whether to use case-insensitive matching
     ignore_case: bool,
-}
-
-#[derive(Debug, Clone)]
-struct ExcludeStackEntry {
-    baselen: usize,
-    pattern_list_idx: usize,
 }
 
 impl IgnoreEngine {
@@ -136,69 +122,55 @@ impl IgnoreEngine {
 
     /// Check if a path is excluded (ignored)
     pub fn is_excluded(&mut self, path: &str, is_dir: bool) -> Option<IgnoreMatch<'_>> {
-        let pathlen = path.len();
-        let basename = path.rfind('/').map(|i| &path[i + 1..]).unwrap_or(path);
+        let pattern = self.last_matching_pattern(path, is_dir)?;
+        Some(IgnoreMatch {
+            is_negative: pattern.flags.is_negative(),
+            pattern,
+        })
+    }
 
-        // Pop exclude stack entries that don't apply
-        self.prep_exclude(path);
-
-        // Check if we have a cached result
-        if let Some(ref pattern) = self.last_pattern {
-            return Some(IgnoreMatch {
-                pattern,
-                is_negative: pattern.flags.is_negative(),
-            });
+    /// Get the last matching pattern for a path (for verbose output).
+    ///
+    /// Ports the parent-directory propagation in C's `prep_exclude`: each
+    /// directory ancestor of `path` is itself checked for exclusion with
+    /// DT_DIR semantics; the shallowest excluded ancestor determines the
+    /// whole subtree, so descendants of an ignored directory are ignored even
+    /// when they do not individually match a pattern.
+    pub fn last_matching_pattern(&mut self, path: &str, is_dir: bool) -> Option<&IgnorePattern> {
+        // Search through all pattern lists in order: EXC_CMDL, EXC_DIRS,
+        // EXC_FILE (global). The per-directory exclusion check first resolves
+        // each ancestor directory; if any is excluded (non-negative) that
+        // pattern wins for the subtree.
+        let ancestors: Vec<&str> = ancestors_of(path);
+        for anc in ancestors {
+            if let Some(p) = self.scan_lists(anc, true) {
+                if !p.flags.is_negative() {
+                    return Some(p);
+                }
+            }
         }
 
-        // Search through all pattern lists in order:
-        // EXC_CMDL -> EXC_DIRS -> EXC_FILE
-        let lists: Vec<&PatternList> = self
+        self.scan_lists(path, is_dir)
+    }
+
+    /// Iterate all pattern lists in precedence order and return the last
+    /// matching pattern for `path`, or None.
+    fn scan_lists<'a>(&'a self, path: &str, is_dir: bool) -> Option<&'a IgnorePattern> {
+        let pathlen = path.len();
+        let basename = path.rfind('/').map(|i| &path[i + 1..]).unwrap_or(path);
+        for list in self
             .cmdline_patterns
             .iter()
             .chain(self.dir_patterns.iter())
             .chain(self.global_patterns.iter())
-            .collect();
-
-        for list in lists {
-            if let Some(pattern) = self.last_matching_pattern_from_list(
-                path,
-                pathlen,
-                basename,
-                is_dir,
-                list,
-            ) {
-                self.last_pattern = Some(pattern.clone());
-                return Some(IgnoreMatch {
-                    pattern,
-                    is_negative: pattern.flags.is_negative(),
-                });
-            }
-        }
-
-        None
-    }
-
-    /// Get the last matching pattern for a path (for verbose output)
-    pub fn last_matching_pattern(
-        &mut self,
-        path: &str,
-        is_dir: bool,
-    ) -> Option<IgnoreMatch<'_>> {
-        self.is_excluded(path, is_dir)
-    }
-
-    fn prep_exclude(&mut self, path: &str) {
-        // Pop stack entries that don't apply to this path
-        while let Some(entry) = self.exclude_stack.last() {
-            if entry.baselen <= path.len()
-                && path.starts_with(&self.basebuf[..entry.baselen])
+        {
+            if let Some(pattern) =
+                self.last_matching_pattern_from_list(path, pathlen, basename, is_dir, list)
             {
-                break;
+                return Some(pattern);
             }
-            self.exclude_stack.pop();
-            self.last_pattern = None;
         }
-        self.basebuf = path.to_string();
+        None
     }
 
     fn last_matching_pattern_from_list<'a>(
@@ -256,9 +228,6 @@ impl IgnoreEngine {
         self.global_patterns.clear();
         self.dir_patterns.clear();
         self.cmdline_patterns.clear();
-        self.exclude_stack.clear();
-        self.last_pattern = None;
-        self.basebuf.clear();
     }
 }
 
@@ -327,13 +296,26 @@ pub fn parse_gitignore(content: &str, base: &str, source: &str, start_line: i32)
     }
 }
 
+/// Return the directory ancestors of `path` (excluding the final component),
+/// top-down. E.g. `"a/b/c.txt"` -> `["a", "a/b"]`; `"c.txt"` -> `[]`.
+fn ancestors_of(path: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let bytes = path.as_bytes();
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'/' {
+            out.push(&path[..i]);
+        }
+    }
+    out
+}
+
 /// Match a basename against a pattern
 fn match_basename(
     basename: &str,
     _basename_len: usize,
     pattern: &str,
     _nowildcardlen: usize,
-    flags: PatternFlags,
+    _flags: PatternFlags,
     ignore_case: bool,
 ) -> bool {
     let wm_flags = if ignore_case {
@@ -438,9 +420,10 @@ mod tests {
         let list = parse_gitignore("foo\n!foo/bar\n", "", "test", 0);
         engine.add_dir_patterns(list);
 
-        // foo/bar should not be ignored because of the negation
-        let result = engine.is_excluded("foo/bar", false);
-        assert!(result.is_none() || result.unwrap().is_negative);
+        // Because parent dir `foo` is excluded, git does NOT re-include
+        // `foo/bar`; `!foo/bar` cannot override an excluded parent directory.
+        let result = engine.is_excluded("foo/bar", false).unwrap();
+        assert!(!result.is_negative);
     }
 
     #[test]

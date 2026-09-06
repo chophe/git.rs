@@ -5,7 +5,6 @@
 //! the `diff=`, `text`, `binary`, `eol` attributes.
 
 use std::collections::HashMap;
-use std::path::Path;
 
 /// Attribute value states matching C Git's ATTR__* values
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,7 +142,19 @@ pub struct AttributesEngine {
 impl AttributesEngine {
     /// Create a new attributes engine
     pub fn new() -> Self {
+        let mut macros = HashMap::new();
+        // Builtin macro, always available: `[attr]binary -diff -merge -text`
+        // (matching C git's `builtin_attr` array in attr.c).
+        macros.insert(
+            "binary".to_string(),
+            vec![
+                AttrAssignment { name: "diff".to_string(), value: AttrValue::Unset },
+                AttrAssignment { name: "merge".to_string(), value: AttrValue::Unset },
+                AttrAssignment { name: "text".to_string(), value: AttrValue::Unset },
+            ],
+        );
         Self {
+            macros,
             ignore_case: false,
             ..Default::default()
         }
@@ -256,6 +267,16 @@ impl AttributesEngine {
                 }
             }
         }
+
+        // Expand built-in macros (e.g. `binary`) after the raw assignments are
+        // collected. A macro attribute set to true applies its expansion.
+        for (macro_name, expansion) in &self.macros {
+            if check.get_value(macro_name).is_set() {
+                for a in expansion {
+                    check.set_value(&a.name, a.value.clone());
+                }
+            }
+        }
     }
 
     /// Get all attributes for a path
@@ -279,6 +300,19 @@ impl AttributesEngine {
                         } else {
                             result.push((assignment.name.clone(), assignment.value.clone()));
                         }
+                    }
+                }
+            }
+        }
+
+        // Expand built-in macros (`binary` -> `-diff -merge -text`).
+        for (macro_name, expansion) in &self.macros {
+            if result.iter().any(|(n, v)| n == macro_name && v.is_set()) {
+                for a in expansion {
+                    if let Some(pos) = result.iter().position(|(n, _)| n == &a.name) {
+                        result[pos] = (a.name.clone(), a.value.clone());
+                    } else {
+                        result.push((a.name.clone(), a.value.clone()));
                     }
                 }
             }
