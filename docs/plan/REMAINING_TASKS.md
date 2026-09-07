@@ -18,7 +18,7 @@ Generated from `docs/plan/FOLLOWUPS.md` and `docs/plan/conversion-plan.md`.
 | **A8** | ✅ DONE | Diff/patch engine completion | `git-diff`, `git-command/diff.rs`, `diff_tree.rs` | `phaseA08_crosswise` |
 | **A9** | ✅ DONE | Hunk-header function context (userdiff drivers) | `git-diff` | `t/t4018`, `phaseA09_crosswise` |
 | **A10** | ✅ DONE | `count-objects -v` real sizes | `git-command/count_objects.rs` | `t/t1450` |
-| **A11** | ❌ NOT DONE | `.gitignore` + attributes engine | new `git-ignore` (or `git-index`) | `t/t0007`, `t/t0008` |
+| **A11** | ✅ DONE | `.gitignore` + attributes engine | `git-attributes` (+ `check-ignore`, `check-attr`) | `t/t0008`, `t/t0003`, `phaseA11_crosswise` |
 | **A12** | ✅ DONE | Local timezone for dates + idents (fixes UTC-only) | `git-date`, `git-command/ident.rs` | `t/t0006` |
 | **A13** | ❌ NOT DONE | Delta compression in `pack-objects` write path | `git-odb/pack` | `pack_crosswise` + `git verify-pack` |
 

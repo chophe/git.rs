@@ -178,8 +178,11 @@ All defined in `docs/plan/test-infrastructure.md`; none implemented yet:
   - checkout / checkout-index / reset; `diff-files` / `diff-index`.
   - Racy-clean / stat-dirty handling (status content-compares today).
   - `update-index --cacheinfo/--refresh/--assume-unchanged/--skip-worktree/-z`.
-  - `status` long format, `--branch`, `--short`, `-z`, renames, `--ignored`,
-    `.gitignore`.
+  - `status` long format, `--branch`, `--short`, `-z`, renames, `--ignored`.
+    (`.gitignore` engine now in `git-attributes` via `IgnoreEngine` / the
+    `check-ignore`/`check-attr` commands (Phase A11); `status --ignored` and
+    `ls-files --others --exclude-standard` should reuse it rather than
+    reimplement ignore matching.)
 
 - **Phase 7 (partially done)** — refs. Summary: `docs/plan/phase-7-summary.md`.
   Implemented: `git-refs` (files backend, packed-refs read) and commands
