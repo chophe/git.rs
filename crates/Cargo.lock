@@ -142,6 +142,7 @@ dependencies = [
 name = "git-command"
 version = "0.1.0"
 dependencies = [
+ "git-attributes",
  "git-commitgraph",
  "git-config",
  "git-core",
