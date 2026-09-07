@@ -123,7 +123,8 @@ fn check_ignore_verbose_parity() {
         "foo/a/b/bar/f",
         "trail",
     ];
-    for mode in [[], ["-v"], ["-v", "-n"], ["-q"]] {
+    let modes: &[&[&str]] = &[&[], &["-v"], &["-v", "-n"], &["-q"]];
+    for mode in modes.iter() {
         for p in paths.iter().copied() {
             let mut args: Vec<&str> = vec!["check-ignore"];
             args.extend_from_slice(&mode);
