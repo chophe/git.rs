@@ -17,8 +17,9 @@ pub mod diff;
 pub mod diff_tree;
 pub mod fsck;
 pub mod hash_object;
-pub mod index_pack;
 pub mod ident;
+pub mod init;
+pub mod index_pack;
 pub mod log;
 pub mod merge_base;
 pub mod merge_file;
@@ -334,6 +335,7 @@ pub fn dispatch_with(
 ) -> Option<Result<(), CommandError>> {
     let cmd: &dyn Command = match name {
         "hash-object" => &hash_object::HashObject,
+        "init" => &init::Init,
         "commit-tree" => &commit_tree::CommitTree,
         "verify-pack" => &verify_pack::VerifyPack,
         "unpack-objects" => &unpack_objects::UnpackObjects,
