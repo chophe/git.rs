@@ -184,6 +184,26 @@ impl Timestamp {
     pub fn format_raw(self) -> String {
         format!("{} {}", self.secs, fmt_tz(self.offset_min))
     }
+
+    /// Format like git's default display date: `Wed Jan 1 10:00:00 2020 +0000`
+    /// (`%a %b %e %H:%M:%S %Y %z`), used by `git commit`'s `Date:` line.
+    pub fn format_git_default(self) -> String {
+        let local = self.secs + (self.offset_min as i64) * 60;
+        let days = local.div_euclid(86400);
+        let tod = local.rem_euclid(86400);
+        let (y, mo, d) = civil_from_days(days);
+        format!(
+            "{} {} {} {:02}:{:02}:{:02} {:04} {}",
+            DAYS[weekday_from_days(days)],
+            MONTHS[(mo - 1) as usize],
+            d,
+            tod / 3600,
+            (tod % 3600) / 60,
+            tod % 60,
+            y,
+            fmt_tz(self.offset_min)
+        )
+    }
 }
 
 /// Parse a date string.
