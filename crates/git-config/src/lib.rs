@@ -208,6 +208,11 @@ impl ConfigSet {
         &self.entries
     }
 
+    /// Append another set's entries (later files win on lookup).
+    pub fn append(&mut self, other: ConfigSet) {
+        self.entries.extend(other.entries);
+    }
+
     /// Set a `section.key` value, appending (so it wins on lookup).
     pub fn set(&mut self, section: &str, key: &str, value: &str) {
         self.set_in(section, None, key, value);
@@ -222,9 +227,9 @@ impl ConfigSet {
         value: &str,
     ) {
         self.entries.push(ConfigEntry {
-            section: section.to_string(),
+            section: section.to_ascii_lowercase(),
             subsection: subsection.map(|s| s.to_string()),
-            key: key.to_string(),
+            key: key.to_ascii_lowercase(),
             value: value.to_string(),
             origin: None,
         });
@@ -256,9 +261,11 @@ impl ConfigSet {
 
 /// Split a section header body into section and optional subsection.
 fn split_section(inner: &str) -> (String, Option<String>) {
+    // Section names are case-insensitive (C git lowercases them);
+    // subsection names keep their case.
     match inner.find('"') {
         Some(i) => {
-            let section = inner[..i].trim().to_string();
+            let section = inner[..i].trim().to_ascii_lowercase();
             let rest = &inner[i + 1..];
             let sub = match rest.find('"') {
                 Some(j) => Some(rest[..j].to_string()),
@@ -266,7 +273,7 @@ fn split_section(inner: &str) -> (String, Option<String>) {
             };
             (section, sub)
         }
-        None => (inner.to_string(), None),
+        None => (inner.to_ascii_lowercase(), None),
     }
 }
 
@@ -284,6 +291,7 @@ fn strip_continuation(value: &str) -> (String, bool) {
 
 /// Split a `key = value` (or `key value`) line, trimming comments.
 fn split_key_value(trimmed: &str) -> (String, String) {
+    // Key names are case-insensitive (C git lowercases them).
     let (key, value) = match trimmed.find('=') {
         Some(i) => (trimmed[..i].trim(), trimmed[i + 1..].trim()),
         None => match trimmed.split_once(char::is_whitespace) {
@@ -291,7 +299,7 @@ fn split_key_value(trimmed: &str) -> (String, String) {
             None => (trimmed.trim(), ""),
         },
     };
-    (key.to_string(), strip_inline_comment(value).to_string())
+    (key.to_ascii_lowercase(), strip_inline_comment(value).to_string())
 }
 
 /// Strip a trailing `#`/`;` comment that follows whitespace and is outside quotes.

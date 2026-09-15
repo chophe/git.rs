@@ -10,6 +10,7 @@ description = "Plumbing command implementations (hash-object, commit-tree, ...)"
 git-hash = { path = "../git-hash" }
 git-object = { path = "../git-object" }
 git-core = { path = "../git-core" }
+git-config = { path = "../git-config" }
 git-odb = { path = "../git-odb" }
 git-date = { path = "../git-date" }
 git-commitgraph = { path = "../git-commitgraph" }
