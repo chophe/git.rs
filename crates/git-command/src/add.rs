@@ -168,11 +168,15 @@ impl Command for Add {
                 walker.spec_hit[si] = true;
             }
         }
-        if let Some(si) = walker.spec_hit.iter().position(|h| !h) {
-            return Err(CommandError::fatal(format!(
-                "fatal: pathspec '{}' did not match any files",
-                specs[si].original
-            )));
+        // `-A`/`-u` with no pathspec match "everything"; an empty match is not
+        // an error (C only reports unmatched *explicit* pathspecs).
+        if !operands.is_empty() {
+            if let Some(si) = walker.spec_hit.iter().position(|h| !h) {
+                return Err(CommandError::fatal(format!(
+                    "fatal: pathspec '{}' did not match any files",
+                    specs[si].original
+                )));
+            }
         }
 
         let mut exit_status = 0;
@@ -186,25 +190,53 @@ impl Command for Add {
             exit_status = 1;
         }
 
-        // Build entries for candidate files, keeping only those that actually
-        // change the index (C only reports/invalidates changed paths).
+        // Decide, per candidate, whether C's `add_to_index` would proceed past
+        // its "nothing changed, really" early return. That happens when the
+        // entry is new, its stat record differs (`ie_match_stat`), or it is
+        // racily clean (mtime >= the index file's mtime). Proceeding upserts
+        // the entry and invalidates its cache-tree node; a content change
+        // (oid/mode) is what `add` reports under `-v`.
         let filemode = repo.config.get_bool("core", "filemode").unwrap_or(true);
-        let mut changes: Vec<(String, IndexEntry, Vec<u8>)> = Vec::new();
+        let index_mtime_sec = std::fs::metadata(&index_path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as u32)
+            .unwrap_or(0);
+        let mut upserts: Vec<(String, IndexEntry, Vec<u8>)> = Vec::new();
+        let mut reported_adds: Vec<String> = Vec::new();
         for rel in &walker.adds {
             let (entry, data) = stat_entry(&work_tree.join(rel), rel, algo, filemode)?;
-            let same = index
-                .entries
-                .iter()
-                .find(|e| e.name == *rel && e.stage == 0)
-                .map(|e| *e == entry)
-                .unwrap_or(false);
-            if !same {
-                changes.push((rel.clone(), entry, data));
+            let existing = index.entries.iter().find(|e| e.name == *rel && e.stage == 0);
+            match existing {
+                None => {
+                    reported_adds.push(rel.clone());
+                    upserts.push((rel.clone(), entry, data));
+                }
+                Some(e) => {
+                    let stat_match = e.mtime_sec == entry.mtime_sec
+                        && e.mtime_nsec == entry.mtime_nsec
+                        && e.size == entry.size
+                        && e.mode == entry.mode
+                        && e.ino == entry.ino
+                        && e.dev == entry.dev
+                        && e.uid == entry.uid
+                        && e.gid == entry.gid;
+                    let racy = e.mtime_sec >= index_mtime_sec;
+                    if !stat_match || racy {
+                        // C re-hashes and replaces the entry; if the content is
+                        // unchanged it is not reported (`was_same`).
+                        if e.oid != entry.oid || e.mode != entry.mode {
+                            reported_adds.push(rel.clone());
+                        }
+                        upserts.push((rel.clone(), entry, data));
+                    }
+                }
             }
         }
 
         let mut events: Vec<(String, bool)> = Vec::new();
-        for (p, _, _) in &changes {
+        for p in &reported_adds {
             events.push((p.clone(), true));
         }
         for p in &removes {
@@ -224,23 +256,20 @@ impl Command for Add {
             return if exit_status == 0 { Ok(()) } else { Err(CommandError::silent(1)) };
         }
 
-        if !changes.is_empty() || !removes.is_empty() {
+        if !upserts.is_empty() || !removes.is_empty() {
             let store = LooseStore::from_repo(&repo);
             let remove_set: std::collections::HashSet<&str> =
                 removes.iter().map(String::as_str).collect();
             index.entries.retain(|e| !remove_set.contains(e.name.as_str()));
-            for (rel, entry, data) in &changes {
+            for (rel, entry, data) in &upserts {
                 let obj = Object::from_data(ObjectKind::Blob, data.clone());
                 store.write(&obj).map_err(CommandError::from)?;
                 index.entries.retain(|x| x.name != *rel);
                 index.entries.push(entry.clone());
             }
             index.entries.sort_by(|a, b| a.name.cmp(&b.name));
-            // C invalidates only the cache-tree nodes covering the changed
-            // paths (`cache_tree_invalidate_path`), keeping other subtrees
-            // valid; replicate that so the index bytes match.
             if let Some(ct) = index.cache_tree.as_mut() {
-                for (p, _, _) in &changes {
+                for (p, _, _) in &upserts {
                     ct.invalidate_path(p);
                 }
                 for p in &removes {
