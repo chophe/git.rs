@@ -18,7 +18,7 @@ where it landed, and how it was verified. Newest entries at the bottom.
 | 2026-08-29 | A10 `count-objects -v` close-out | DONE |
 | 2026-08-29 | A11 `.gitignore` + attributes engine | planned |
 | 2026-08-29 | A12 local timezone dates/idents | DONE (core) |
-| 2026-08-29 | A13 pack delta compression on write | planned |
+| 2026-08-29 | A13 pack delta compression on write | DONE |
 
 ## Details
 
@@ -279,6 +279,22 @@ Implemented per [12-local-timezone-dates.md](12-local-timezone-dates.md).
   tz-less, epoch (`@...`) and explicit-offset dates; full workspace green;
   scoreboard updated.
 
-### A13 — pack delta compression on write
+### A13 — pack delta compression on write — DONE
 
 Implemented per [13-pack-delta-compression.md](13-pack-delta-compression.md).
+
+- `git-odb/src/pack/delta.rs`: `DeltaIndex`/`create_delta` port of
+  `diff-delta.c` (plain base-128 header sizes, Rabin-window index with C's
+  previous-entry ptr update on consecutive identical blocks, 64KB copy-op
+  cap, `max_size` early-out).
+- `git-odb/src/pack/write.rs`: `PackOptions{window,depth,allow_ofs_delta,
+  compression}` + `write_pack_opts` (type-grouped, larger-first order,
+  per-base index cache, `--depth` chain limiting, OFS distance "+1" varint,
+  REF_DELTA fallback; index entries oid-sorted for the v2 fanout).
+- `git-command/src/pack_objects.rs`: `--window/--depth/--compression`,
+  `--delta-base-offset/--no-delta-base-offset`, compat no-ops
+  (`--thin/--revs/--stdin/--non-empty/--threads/...`), `--non-empty` fatal
+  on empty input.
+- Verification: `phaseA13_crosswise.rs` (registered `phaseA13-crosswise`) —
+  C `verify-pack`/`index-pack --verify` accept our deltified packs,
+  object-set parity, size ballpark, flag acceptance; `git-odb` lib green.

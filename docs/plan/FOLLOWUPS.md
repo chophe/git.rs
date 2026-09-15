@@ -25,8 +25,19 @@ tested.
    - Reads names from stdin (refs and oids both resolve), echoes the resolved
      oid, `missing` for absent objects. Crosswise-verified.
 
-4. **Pack delta compression in `pack-objects`** — **NOT DONE**
-   - `write_pack` still stores objects non-deltified.
+4. **DONE (A13)** — Pack delta compression in `pack-objects`
+   (`git-odb/src/pack/{delta,write}.rs`, `git-command/pack_objects.rs`)
+   - `delta::create_delta`/`DeltaIndex` port of `diff-delta.c` (plain
+     base-128 delta header sizes per `delta.h`, Rabin index with C's
+     lowest-offset-wins dedup); `write_pack_opts` sliding-window
+     same-type search with `--window`/`--depth`/`--compression` and
+     OFS_DELTA (default) / REF_DELTA (`--no-delta-base-offset`).
+   - `pack-objects` accepts `--window/--depth/--compression`,
+     `--delta-base-offset/--no-delta-base-offset`, plus compat no-ops
+     (`--thin/--revs/--stdin/--non-empty/--threads/--window-memory/...`).
+   - Index entries are oid-sorted for the v2 fanout while the pack stays
+     in delta-friendly order. Crosswise: `phaseA13_crosswise.rs`
+     (C `verify-pack`/`index-pack --verify` accept our packs).
 
 5. **DONE (A10, re-verified)** — `git count-objects -v` size fields and
    garbage semantics (fanout cruft + pack-dir pairing, `st_size`-based
@@ -118,7 +129,7 @@ All defined in `docs/plan/test-infrastructure.md`; none implemented yet:
 - **DONE (A6/A12)** — `git-date`: local-timezone parsing, calendar-aware
   month/year relative math, and ident offsets now use the local zone
   (see `phase-a/12-local-timezone-dates.md`).
-- **`pack-objects`**: non-deltified packs (see A4).
+- **`pack-objects`**: deltified packs (see A13 above).
 - **`hash-object`** outside a repo always hashes with SHA-1 (matches git
   default; fine, but confirm `-t`/`--stdin` parity against `t1007`).
 - **DONE (A2)** — `git-command` uses `std::env::set_current_dir`-free design;

@@ -20,7 +20,7 @@ Generated from `docs/plan/FOLLOWUPS.md` and `docs/plan/conversion-plan.md`.
 | **A10** | ✅ DONE | `count-objects -v` real sizes | `git-command/count_objects.rs` | `t/t1450` |
 | **A11** | ✅ DONE | `.gitignore` + attributes engine | `git-attributes` (+ `check-ignore`, `check-attr`) | `t/t0008`, `t/t0003`, `phaseA11_crosswise` |
 | **A12** | ✅ DONE | Local timezone for dates + idents (fixes UTC-only) | `git-date`, `git-command/ident.rs` | `t/t0006` |
-| **A13** | ❌ NOT DONE | Delta compression in `pack-objects` write path | `git-odb/pack` | `pack_crosswise` + `git verify-pack` |
+| **A13** | ✅ DONE | Delta compression in `pack-objects` write path | `git-odb/pack` | `phaseA13_crosswise` + `git verify-pack` |
 
 **Deferred from A8 (explicitly noted in FOLLOWUPS):**
 - Word-diff (`--word-diff`)
