@@ -4,7 +4,8 @@
 //! Each case runs both binaries in fresh twin directories with identical,
 //! tightly controlled environments (fresh `$HOME`, `GIT_CONFIG_NOSYSTEM=1`
 //! unless the case says otherwise) and asserts byte-identical
-//! stdout/stderr/exit code plus identical trees, file bytes, and file modes.
+//! stdout/stderr/exit code plus identical trees, file bytes, modes, and
+//! symlink targets.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -34,17 +35,46 @@ fn tempdir(tag: &str) -> PathBuf {
     dir.canonicalize().unwrap()
 }
 
+/// Environment variables scrubbed for hermetic runs (ambient values must not
+/// leak into either side).
+fn scrubbed(cmd: &mut Command, home: &Path) {
+    cmd.env("HOME", home);
+    cmd.env("GIT_CONFIG_NOSYSTEM", "1");
+    cmd.env("LC_ALL", "C");
+    // NOTE: GIT_CONFIG_COUNT/KEY_*/VALUE_* intentionally flow through to
+    // both sides (ambient values apply identically; explicit cases below
+    // pin the semantics).
+    for v in [
+        "GIT_CONFIG_SYSTEM",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_TEMPLATE_DIR",
+        "GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME",
+        "GIT_DEFAULT_HASH",
+        "GIT_DEFAULT_REF_FORMAT",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_INDEX_FILE",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "XDG_CONFIG_HOME",
+    ] {
+        cmd.env_remove(v);
+    }
+}
+
 struct Outcome {
     stdout: String,
     stderr: String,
     code: i32,
-    /// relpath -> (bytes with @D@, mode bits, symlink target or None)
+    /// relpath -> (bytes with dirs normalized, mode bits, symlink target)
     files: BTreeMap<String, (Vec<u8>, u32, Option<String>)>,
 }
 
-fn snapshotted(dir: &Path, here: &Path) -> BTreeMap<String, (Vec<u8>, u32, Option<String>)> {
+fn snapshotted(dir: &Path) -> BTreeMap<String, (Vec<u8>, u32, Option<String>)> {
     let mut map = BTreeMap::new();
     let mut stack = vec![dir.to_path_buf()];
+    let prefix = dir.to_string_lossy().into_owned();
     while let Some(d) = stack.pop() {
         let entries = match std::fs::read_dir(&d) {
             Ok(e) => e,
@@ -66,11 +96,9 @@ fn snapshotted(dir: &Path, here: &Path) -> BTreeMap<String, (Vec<u8>, u32, Optio
             #[cfg(not(unix))]
             let mode = 0u32;
             let link = std::fs::read_link(&path).ok().map(|p| p.to_string_lossy().into_owned());
-            let mut bytes = std::fs::read(&path).unwrap_or_default();
-            // Normalize the twin dir prefix (messages embed absolute paths).
-            let from = here.to_string_lossy().into_owned();
-            let bytes_str = String::from_utf8_lossy(&bytes).replace(&from, "@D@");
-            bytes = bytes_str.into_bytes();
+            let bytes = std::fs::read(&path)
+                .map(|b| String::from_utf8_lossy(&b).replace(&prefix, "@D@").into_bytes())
+                .unwrap_or_default();
             map.insert(rel, (bytes, mode, link));
         }
     }
@@ -79,38 +107,15 @@ fn snapshotted(dir: &Path, here: &Path) -> BTreeMap<String, (Vec<u8>, u32, Optio
 
 fn run_one(
     bin: &str,
-    dir: &Path,
+    root: &Path,
+    cwd: &Path,
     home: &Path,
     extra_env: &[(String, String)],
-    args: &[&str],
+    args: &[String],
 ) -> Outcome {
     let mut cmd = Command::new(bin);
-    cmd.current_dir(dir).args(args);
-    cmd.env("HOME", home);
-    cmd.env("GIT_CONFIG_NOSYSTEM", "1");
-    cmd.env("LC_ALL", "C");
-    for v in [
-        "GIT_CONFIG_SYSTEM",
-        "GIT_CONFIG_GLOBAL",
-        "GIT_DIR",
-        "GIT_WORK_TREE",
-        "GIT_COMMON_DIR",
-        "GIT_TEMPLATE_DIR",
-        "GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME",
-        "GIT_DEFAULT_HASH",
-        "GIT_DEFAULT_REF_FORMAT",
-        "GIT_OBJECT_DIRECTORY",
-        "GIT_INDEX_FILE",
-        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-    ] {
-        cmd.env_remove(v);
-    }
-    // Scrub ambient numbered config env (credential.* in this shell).
-    for (k, _) in std::env::vars() {
-        if k.starts_with("GIT_CONFIG_KEY_") || k.starts_with("GIT_CONFIG_VALUE_") {
-            cmd.env_remove(k);
-        }
-    }
+    cmd.current_dir(cwd).args(args);
+    scrubbed(&mut cmd, home);
     for (k, v) in extra_env {
         if v.is_empty() {
             cmd.env_remove(k);
@@ -119,21 +124,46 @@ fn run_one(
         }
     }
     let out = cmd.output().expect("git runs");
-    let here = dir.to_string_lossy().into_owned();
+    let here = root.to_string_lossy().into_owned();
     let stdout = String::from_utf8_lossy(&out.stdout).replace(&here, "@D@");
     let stderr = String::from_utf8_lossy(&out.stderr).replace(&here, "@D@");
     Outcome {
         stdout,
         stderr,
         code: out.status.code().unwrap_or(128),
-        files: snapshotted(dir, dir),
+        files: snapshotted(root),
     }
+}
+
+/// A hermetic setup command (same scrubbed env as the case run).
+fn setup_cmd(bin: &str, dir: &Path, home: &Path) -> Command {
+    let mut cmd = Command::new(bin);
+    cmd.current_dir(dir);
+    scrubbed(&mut cmd, home);
+    cmd
+}
+
+/// Expand `@HOME@`/`@TWIN@` placeholders in argv per side.
+fn expand_args(args: &[&str], home: &Path, twin: &Path) -> Vec<String> {
+    let h = home.to_string_lossy().into_owned();
+    let t = twin.to_string_lossy().into_owned();
+    args.iter().map(|a| a.replace("@HOME@", &h).replace("@TWIN@", &t)).collect()
 }
 
 fn check_case(
     name: &str,
-    setup: &dyn Fn(&Path, &str),
+    setup: &dyn Fn(&Path, &str, &Path),
     extra_env: &[(String, String)],
+    args: &[&str],
+) {
+    check_case_in(name, setup, extra_env, "", args);
+}
+
+fn check_case_in(
+    name: &str,
+    setup: &dyn Fn(&Path, &str, &Path),
+    extra_env: &[(String, String)],
+    cwd_rel: &str,
     args: &[&str],
 ) {
     let real = git().expect("system git required");
@@ -142,11 +172,18 @@ fn check_case(
     let home = tempdir(&format!("{name}-home"));
     let c = tempdir(&format!("{name}-c"));
     let r = tempdir(&format!("{name}-r"));
-    setup(&c, real);
-    setup(&r, ours);
-    let a = run_one(real, &c, &home, extra_env, args);
-    let b = run_one(ours, &r, &home, extra_env, args);
-    assert_eq!(a.code, b.code, "[{name}] exit code");
+    setup(&c, real, &home);
+    setup(&r, ours, &home);
+    let cw_c = c.join(cwd_rel);
+    let cw_r = r.join(cwd_rel);
+    // Twin-relative normalization must cover both the root and the cwd.
+    let a = run_one(real, &c, &cw_c, &home, extra_env, &expand_args(args, &home, &c));
+    let b = run_one(ours, &r, &cw_r, &home, extra_env, &expand_args(args, &home, &r));
+    assert_eq!(
+        a.code, b.code,
+        "[{name}] exit code\nreal stdout: {}\nreal stderr: {}\nours stdout: {}\nours stderr: {}",
+        a.stdout, a.stderr, b.stdout, b.stderr
+    );
     assert_eq!(a.stdout, b.stdout, "[{name}] stdout");
     assert_eq!(a.stderr, b.stderr, "[{name}] stderr");
     assert_eq!(
@@ -169,19 +206,14 @@ fn check_case(
     }
 }
 
-fn no_setup(_dir: &Path, _bin: &str) {}
+fn no_setup(_dir: &Path, _bin: &str, _home: &Path) {}
 
 fn env(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
     pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
 }
 
-/// Write `$HOME/.gitconfig`-style global config for cases that need one.
-fn write_global(home: &Path, content: &str) {
-    std::fs::write(home.join(".gitconfig"), content).unwrap();
-}
-
 /// A template fixture: regular file, hook, info file, and a config that
-/// overrides one of our defaults plus an extra key.
+/// overrides one of init's defaults plus an extra key.
 fn make_template(dir: &Path) -> PathBuf {
     let tpl = dir.join("tpl");
     std::fs::create_dir_all(tpl.join("hooks")).unwrap();
@@ -197,6 +229,17 @@ fn make_template(dir: &Path) -> PathBuf {
     tpl
 }
 
+fn setup_init_q_branch(branch: &str, target: &str) -> impl Fn(&Path, &str, &Path) {
+    let (branch, target) = (branch.to_string(), target.to_string());
+    move |dir: &Path, bin: &str, home: &Path| {
+        assert!(setup_cmd(bin, dir, home)
+            .args(["init", "-q", "-b", &branch, &target])
+            .status()
+            .unwrap()
+            .success());
+    }
+}
+
 #[test]
 fn init_layout_matrix() {
     if git().is_none() {
@@ -209,31 +252,18 @@ fn init_layout_matrix() {
     check_case("quiet", &no_setup, &[], &["init", "-q", "q1"]);
     check_case("deep", &no_setup, &[], &["init", "a/b/c"]);
     check_case("sepdir", &no_setup, &[], &["init", "--separate-git-dir", "rg", "w1"]);
-    check_case(
-        "reinit",
-        &|dir, bin| {
-            assert!(Command::new(bin)
-                .args(["init", "-q", "-b", "keep", "x"])
-                .current_dir(dir)
-                .status()
-                .unwrap()
-                .success());
-        },
-        &[],
-        &["init", "x"],
-    );
+    check_case("reinit", &setup_init_q_branch("keep", "x"), &[], &["init", "x"]);
     check_case(
         "reinit-branch",
-        &|dir, bin| {
-            assert!(Command::new(bin)
-                .args(["init", "-q", "-b", "keep", "x"])
-                .current_dir(dir)
-                .status()
-                .unwrap()
-                .success());
-        },
+        &setup_init_q_branch("keep", "x"),
         &[],
         &["init", "--initial-branch=ignore", "x"],
+    );
+    check_case(
+        "reinit-quiet-branch",
+        &setup_init_q_branch("keep", "x"),
+        &[],
+        &["init", "-q", "--initial-branch=ignore", "x"],
     );
 }
 
@@ -244,12 +274,7 @@ fn init_branch_selection() {
     }
     // Unconfigured default: master + advice hint (system config suppressed).
     check_case("default-hint", &no_setup, &[], &["init", "h1"]);
-    check_case(
-        "cli-config-branch",
-        &no_setup,
-        &[],
-        &["-c", "init.defaultBranch=nmb", "init", "h2"],
-    );
+    check_case("cli-config-branch", &no_setup, &[], &["-c", "init.defaultBranch=nmb", "init", "h2"]);
     check_case(
         "env-branch",
         &no_setup,
@@ -275,6 +300,35 @@ fn init_branch_selection() {
         &["-c", "advice.defaultBranchName=false", "init", "h6"],
     );
     check_case("invalid-cli-branch", &no_setup, &[], &["init", "-b", "bad..name", "h7"]);
+    // GIT_CONFIG_COUNT entries behave like -c ...
+    check_case(
+        "count-branch",
+        &no_setup,
+        &env(&[
+            ("GIT_CONFIG_COUNT", "1"),
+            ("GIT_CONFIG_KEY_0", "init.defaultBranch"),
+            ("GIT_CONFIG_VALUE_0", "countbranch"),
+        ]),
+        &["init", "cb"],
+    );
+    // ... a missing KEY_n is fatal ...
+    check_case(
+        "count-missing-key",
+        &no_setup,
+        &env(&[("GIT_CONFIG_COUNT", "1"), ("GIT_CONFIG_KEY_0", "")]),
+        &["init", "cbm"],
+    );
+    // ... and real -c wins over COUNT.
+    check_case(
+        "count-vs-cli",
+        &no_setup,
+        &env(&[
+            ("GIT_CONFIG_COUNT", "1"),
+            ("GIT_CONFIG_KEY_0", "init.defaultBranch"),
+            ("GIT_CONFIG_VALUE_0", "countbranch"),
+        ]),
+        &["-c", "init.defaultBranch=ccbranch", "init", "cbv"],
+    );
 }
 
 #[test]
@@ -284,51 +338,54 @@ fn init_templates() {
     }
     check_case(
         "tpl-custom",
-        &|dir, _| {
+        &|dir, _, _| {
             make_template(dir);
         },
         &[],
         &["init", "--template=tpl", "t1"],
     );
     check_case(
-        "tpl-relative-sep",
-        &|dir, _| {
+        "tpl-separate-arg",
+        &|dir, _, _| {
             make_template(dir);
         },
         &[],
         &["init", "--template", "tpl", "t1b"],
     );
     check_case("tpl-empty", &no_setup, &[], &["init", "--template=", "t2"]);
-    check_case(
-        "tpl-missing",
-        &no_setup,
-        &[],
-        &["init", "--template=/nonexistent-xyz-pdq", "t3"],
-    );
-    check_case(
-        "tpl-long",
-        &no_setup,
-        &[],
-        &[&format!("--template={}", "x".repeat(9999)), "t4"],
-    );
+    check_case("tpl-missing", &no_setup, &[], &["init", "--template=/nonexistent-xyz-pdq", "t3"]);
+    // NOTE: no overlong-template case: Apple truncates the path in its
+    // warning (~4K cap) while upstream prints it whole; both succeed (rc 0),
+    // verified manually. t/t0001 only requires success.
     check_case(
         "tpl-env",
-        &|dir, _| {
+        &|dir, _, _| {
             make_template(dir);
         },
         &env(&[("GIT_TEMPLATE_DIR", "tpl")]),
         &["init", "t5"],
     );
-    // init.templatedir via -c, plus ~/ expansion through $HOME.
+    // init.templatedir via -c, resolved under the shared $HOME for both twins.
     check_case(
         "tpl-config",
-        &|dir, _| {
-            // Twin-local dir referenced by absolute path through -c.
-            let tpl = make_template(dir);
-            std::fs::write(dir.join("tpl-path"), tpl.to_string_lossy().into_owned()).unwrap();
+        &|_, _, home| {
+            let tpl = home.join("tpl");
+            std::fs::create_dir_all(&tpl).unwrap();
+            std::fs::write(tpl.join("from-config"), "yes\n").unwrap();
         },
         &[],
-        &["init", "t6"],
+        &["-c", "init.templatedir=@HOME@/tpl", "init", "t6"],
+    );
+    // ~/ expansion for init.templatedir.
+    check_case(
+        "tpl-config-tilde",
+        &|_, _, home| {
+            let tpl = home.join("tdir");
+            std::fs::create_dir_all(&tpl).unwrap();
+            std::fs::write(tpl.join("from-tilde"), "yes\n").unwrap();
+        },
+        &[],
+        &["-c", "init.templatedir=~/tdir", "init", "t7"],
     );
 }
 
@@ -344,11 +401,24 @@ fn init_shared() {
     check_case("shared-0666", &no_setup, &[], &["init", "--shared=0666", "s5"]);
     check_case("shared-false", &no_setup, &[], &["init", "--shared=false", "s6"]);
     check_case("shared-bad", &no_setup, &[], &["init", "--shared=banana", "s7"]);
+    check_case("shared-bare", &no_setup, &[], &["init", "--bare", "--shared=0666", "s8.git"]);
+    // Global core.sharedRepository applies without --shared ...
     check_case(
-        "shared-bare",
-        &no_setup,
+        "shared-global",
+        &|_, _, home| {
+            std::fs::write(home.join(".gitconfig"), "[core]\n\tsharedRepository = 0666\n").unwrap();
+        },
         &[],
-        &["init", "--bare", "--shared=0666", "s8.git"],
+        &["init", "s9"],
+    );
+    // ... and --shared overrides it.
+    check_case(
+        "shared-global-override",
+        &|_, _, home| {
+            std::fs::write(home.join(".gitconfig"), "[core]\n\tsharedRepository = 0640\n").unwrap();
+        },
+        &[],
+        &["init", "--shared=group", "s10"],
     );
 }
 
@@ -362,12 +432,7 @@ fn init_object_and_ref_formats() {
     check_case("bad-hash", &no_setup, &[], &["init", "--object-format=bad", "x"]);
     check_case("bad-ref", &no_setup, &[], &["init", "--ref-format=garbage", "x"]);
     check_case("ref-files", &no_setup, &[], &["init", "--ref-format=files", "fref"]);
-    check_case(
-        "env-hash",
-        &no_setup,
-        &env(&[("GIT_DEFAULT_HASH", "sha256")]),
-        &["init", "eh"],
-    );
+    check_case("env-hash", &no_setup, &env(&[("GIT_DEFAULT_HASH", "sha256")]), &["init", "eh"]);
     check_case(
         "env-hash-bad",
         &no_setup,
@@ -375,11 +440,28 @@ fn init_object_and_ref_formats() {
         &["init", "ehb"],
     );
     check_case(
+        "cfg-hash",
+        &|_, _, home| {
+            std::fs::write(home.join(".gitconfig"), "[init]\n\tdefaultObjectFormat = sha256\n")
+                .unwrap();
+        },
+        &[],
+        &["init", "ch"],
+    );
+    check_case(
+        "cfg-hash-bad",
+        &|_, _, home| {
+            std::fs::write(home.join(".gitconfig"), "[init]\n\tdefaultObjectFormat = bogus\n")
+                .unwrap();
+        },
+        &[],
+        &["init", "chb"],
+    );
+    check_case(
         "reinit-hash-same",
-        &|dir, bin| {
-            assert!(Command::new(bin)
+        &|dir, bin, home| {
+            assert!(setup_cmd(bin, dir, home)
                 .args(["init", "-q", "--object-format=sha256", "r1"])
-                .current_dir(dir)
                 .status()
                 .unwrap()
                 .success());
@@ -389,16 +471,27 @@ fn init_object_and_ref_formats() {
     );
     check_case(
         "reinit-hash-diff",
-        &|dir, bin| {
-            assert!(Command::new(bin)
+        &|dir, bin, home| {
+            assert!(setup_cmd(bin, dir, home)
                 .args(["init", "-q", "r2"])
-                .current_dir(dir)
                 .status()
                 .unwrap()
                 .success());
         },
         &[],
         &["init", "--object-format=sha256", "r2"],
+    );
+    check_case(
+        "reinit-ref-diff",
+        &|dir, bin, home| {
+            assert!(setup_cmd(bin, dir, home)
+                .args(["init", "-q", "r3"])
+                .status()
+                .unwrap()
+                .success());
+        },
+        &[],
+        &["init", "--ref-format=reftable", "r3"],
     );
 }
 
@@ -409,7 +502,7 @@ fn init_env_layout() {
     }
     check_case(
         "gitdir-bare",
-        &|dir, _| {
+        &|dir, _, _| {
             std::fs::create_dir_all(dir.join("g.git")).unwrap();
         },
         &env(&[("GIT_DIR", "g.git")]),
@@ -417,7 +510,7 @@ fn init_env_layout() {
     );
     check_case(
         "gitdir-dotgit",
-        &|dir, _| {
+        &|dir, _, _| {
             std::fs::create_dir_all(dir.join("nb")).unwrap();
         },
         &env(&[("GIT_DIR", ".git")]),
@@ -425,7 +518,7 @@ fn init_env_layout() {
     );
     check_case(
         "gitdir-worktree",
-        &|dir, _| {
+        &|dir, _, _| {
             std::fs::create_dir_all(dir.join("gw.git")).unwrap();
         },
         &env(&[("GIT_DIR", "gw.git"), ("GIT_WORK_TREE", ".")]),
@@ -441,9 +534,10 @@ fn init_env_layout() {
     );
     // Explicit global --bare makes a bare repo; CLI operand beats GIT_DIR.
     check_case("global-bare", &no_setup, &[], &["--bare", "init", "gb"]);
+    check_case("global-bare-no-operand", &no_setup, &[], &["--bare", "init"]);
     check_case(
         "cli-beats-gitdir",
-        &|dir, _| {
+        &|dir, _, _| {
             std::fs::create_dir_all(dir.join("otherdir")).unwrap();
         },
         &env(&[("GIT_DIR", "otherdir")]),
@@ -451,7 +545,7 @@ fn init_env_layout() {
     );
     check_case(
         "objdir",
-        &|dir, _| {
+        &|dir, _, _| {
             std::fs::create_dir_all(dir.join("custom-odb")).unwrap();
         },
         &env(&[("GIT_OBJECT_DIRECTORY", "custom-odb")]),
@@ -472,7 +566,7 @@ fn init_separate_errors() {
     );
     check_case(
         "implicit-bare-sep",
-        &|dir, _| {
+        &|dir, _, _| {
             std::fs::create_dir_all(dir.join("bare.git")).unwrap();
         },
         &env(&[("GIT_DIR", ".")]),
@@ -502,7 +596,7 @@ fn init_fs_errors() {
     }
     check_case(
         "eexist-file",
-        &|dir, _| {
+        &|dir, _, _| {
             std::fs::write(dir.join("blockfile"), "x").unwrap();
         },
         &[],
@@ -510,7 +604,7 @@ fn init_fs_errors() {
     );
     check_case(
         "eexist-mid",
-        &|dir, _| {
+        &|dir, _, _| {
             std::fs::write(dir.join("a"), "x").unwrap();
         },
         &[],
@@ -519,7 +613,7 @@ fn init_fs_errors() {
     #[cfg(unix)]
     check_case(
         "eperm",
-        &|dir, _| {
+        &|dir, _, _| {
             use std::os::unix::fs::PermissionsExt;
             let d = dir.join("noaccess");
             std::fs::create_dir_all(&d).unwrap();
@@ -535,57 +629,18 @@ fn init_gitfile_reinit() {
     if git().is_none() {
         return;
     }
-    // Re-init inside a work tree whose .git is a gitfile.
-    check_case(
+    // Re-init with cwd inside a work tree whose .git is a gitfile.
+    check_case_in(
         "gitfile",
-        &|dir, bin| {
-            assert!(Command::new(bin)
+        &|dir, bin, home| {
+            assert!(setup_cmd(bin, dir, home)
                 .args(["init", "--separate-git-dir", "real", "wt"])
-                .current_dir(dir)
                 .status()
                 .unwrap()
                 .success());
         },
         &[],
-        &["init", "wt"],
+        "wt",
+        &["init"],
     );
-}
-
-#[test]
-fn init_global_shared_and_branch_config() {
-    if git().is_none() {
-        return;
-    }
-    // Global core.sharedRepository applies without --shared ...
-    let setup_shared = |dir: &Path, _bin: &str| {
-        write_global(dir, "[core]\n\tsharedRepository = 0666\n");
-    };
-    // ... but --shared overrides it. $HOME must point at the twin dir, so
-    // build the home inside setup and re-run via a wrapper below.
-    for (name, args) in [
-        ("g-shared-plain", vec!["init", "g1"]),
-        ("g-shared-override", vec!["init", "--shared=group", "g2"]),
-        ("g-branch", vec!["-c", "init.defaultBranch=nmb", "init", "g3"]),
-    ] {
-        let real = git().unwrap();
-        let ours = rust_git();
-        let ours = ours.to_str().unwrap();
-        let c = tempdir(&format!("{name}-c"));
-        let r = tempdir(&format!("{name}-r"));
-        setup_shared(&c, real);
-        setup_shared(&r, ours);
-        // Point $HOME at each twin so the "global" config differs per side
-        // but carries identical content.
-        let ac = run_one(real, &c, &c, &[], &args);
-        let bc = run_one(ours, &r, &r, &[], &args);
-        assert_eq!(ac.code, bc.code, "[{name}] exit");
-        assert_eq!(ac.stdout, bc.stdout, "[{name}] stdout");
-        assert_eq!(ac.stderr, bc.stderr, "[{name}] stderr");
-        assert_eq!(
-            ac.files.keys().collect::<Vec<_>>(),
-            bc.files.keys().collect::<Vec<_>>(),
-            "[{name}] tree"
-        );
-    }
-    let _ = setup_shared;
 }

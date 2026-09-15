@@ -23,6 +23,7 @@ impl Command for Init {
         let parsed = match parse_args(args) {
             Ok(p) => p,
             Err(ParseFail::Stderr(msg)) => return Err(CommandError::usage(msg)),
+            Err(ParseFail::Fatal(msg)) => return Err(CommandError::fatal(msg)),
             Err(ParseFail::StdoutUsage { stderr_msg }) => {
                 // C prints the usage block to stdout here (e.g. ambiguous
                 // abbreviations) while the error itself goes to stderr.
@@ -68,13 +69,16 @@ fn stdout_usage_error(first_line: String) -> ParseFail {
     ParseFail::StdoutUsage { stderr_msg: first_line }
 }
 
-/// Parse failure routing: C prints some usage blocks on stdout.
+/// Parse failure routing: C prints some usage blocks on stdout, and some
+/// parse errors are fatal (128) rather than usage errors (129).
 #[derive(Debug)]
 enum ParseFail {
-    /// Message (possibly with usage) goes to stderr.
+    /// Message (possibly with usage) goes to stderr, exit 129.
     Stderr(String),
-    /// `stderr_msg` goes to stderr; the full usage block goes to stdout.
+    /// `stderr_msg` goes to stderr; the full usage block goes to stdout, 129.
     StdoutUsage { stderr_msg: String },
+    /// Fatal diagnostic on stderr, exit 128 (e.g. bad `--shared=` value).
+    Fatal(String),
 }
 
 impl From<ParseFail> for CommandError {
@@ -82,6 +86,7 @@ impl From<ParseFail> for CommandError {
         match f {
             ParseFail::Stderr(msg) => CommandError::usage(msg),
             ParseFail::StdoutUsage { stderr_msg } => CommandError::usage(stderr_msg),
+            ParseFail::Fatal(msg) => CommandError::fatal(msg),
         }
     }
 }
@@ -290,8 +295,7 @@ fn parse_args(args: &[String]) -> Result<InitArgs, ParseFail> {
                         out.shared = None;
                     } else {
                         let v = inline.as_deref().unwrap_or("");
-                        out.shared =
-                            Some(parse_shared(v).map_err(|e| ParseFail::Stderr(e.message))?);
+                        out.shared = Some(parse_shared(v)?);
                     }
                 }
                 _ => unreachable!(),
@@ -334,7 +338,7 @@ fn parse_args(args: &[String]) -> Result<InitArgs, ParseFail> {
 }
 
 /// Parse a `--shared[=value]` argument (C `git_config_perm` semantics).
-fn parse_shared(value: &str) -> Result<SharedVal, CommandError> {
+fn parse_shared(value: &str) -> Result<SharedVal, ParseFail> {
     if value.is_empty() || value == "true" || value == "group" {
         return Ok(SharedVal::Group);
     }
@@ -353,7 +357,7 @@ fn parse_shared(value: &str) -> Result<SharedVal, CommandError> {
             2 => return Ok(SharedVal::Everybody),
             _ => {
                 if mode & 0o600 != 0o600 {
-                    return Err(CommandError::fatal(format!(
+                    return Err(ParseFail::Fatal(format!(
                         "fatal: problem with core.sharedRepository filemode value (0{mode:03o}).\nThe owner of files must always have read and write permissions."
                     )));
                 }
@@ -365,7 +369,7 @@ fn parse_shared(value: &str) -> Result<SharedVal, CommandError> {
     match git_config::parse_bool(value) {
         Some(true) => Ok(SharedVal::Group),
         Some(false) => Ok(SharedVal::Mode(0)),
-        None => Err(CommandError::fatal(format!(
+        None => Err(ParseFail::Fatal(format!(
             "fatal: bad boolean config value '{value}' for 'arg'"
         ))),
     }
@@ -393,8 +397,8 @@ impl SharedVal {
 // ---------------------------------------------------------------------------
 
 /// Load the system + global config C consults for `init` defaults, then apply
-/// `git -c` overrides (highest precedence).
-fn base_config(ctx: &RepoContext) -> git_config::ConfigSet {
+/// `GIT_CONFIG_COUNT` and `git -c` overrides (highest precedence).
+fn base_config(ctx: &RepoContext) -> Result<git_config::ConfigSet, CommandError> {
     use git_config::ConfigSet;
     let mut cfg = ConfigSet::new();
     // System config: explicit override, or the first existing candidate.
@@ -446,10 +450,15 @@ fn base_config(ctx: &RepoContext) -> git_config::ConfigSet {
             load_lenient(&mut cfg, &h.join(".gitconfig"));
         }
     }
+    // `GIT_CONFIG_COUNT` entries behave like `-c` (C prints the `error:`
+    // line itself inside the helper, then dies).
+    for (name, value) in crate::config_count_overrides()? {
+        cfg.set_cli(&name, value.as_deref());
+    }
     for (name, value) in &ctx.config_overrides {
         cfg.set_cli(name, value.as_deref());
     }
-    cfg
+    Ok(cfg)
 }
 
 fn load_lenient(cfg: &mut git_config::ConfigSet, path: &Path) {
@@ -506,15 +515,22 @@ fn init_db(ctx: &RepoContext, parsed: &InitArgs, out: &mut dyn Write) -> Result<
 
     let operand = parsed.operands.first().cloned();
 
-    // The target directory (created when an operand is given).
+    // The target directory (created when an operand is given). C reports a
+    // file-in-the-way as EEXIST ("File exists"), like Rust's own error for
+    // a direct hit; Rust reports ENOTDIR for a file mid-path, mapped here.
     let work_base: PathBuf = match &operand {
         Some(dir) => {
             let target = ctx.cwd.join(dir);
-            std::fs::create_dir_all(&target).map_err(|e| {
-                CommandError::fatal(format!("fatal: cannot mkdir '{}': {}", dir, io_strerror(&e)))
-            })?;
+            let mkdir_err = |e: std::io::Error| {
+                let mut msg = io_strerror(&e);
+                if e.kind() == std::io::ErrorKind::NotADirectory {
+                    msg = "File exists".to_string();
+                }
+                CommandError::fatal(format!("fatal: cannot mkdir {dir}: {msg}"))
+            };
+            std::fs::create_dir_all(&target).map_err(mkdir_err)?;
             canonicalize(&target).map_err(|e| {
-                CommandError::fatal(format!("fatal: cannot mkdir '{}': {}", dir, io_strerror(&e)))
+                CommandError::fatal(format!("fatal: cannot mkdir {dir}: {}", io_strerror(&e)))
             })?
         }
         None => canonicalize(&ctx.cwd)
@@ -576,11 +592,13 @@ fn init_db(ctx: &RepoContext, parsed: &InitArgs, out: &mut dyn Write) -> Result<
     // the target directory, like C after chdir().
     let original_git_dir = absolutize(&work_base, &git_dir_raw);
 
-    // The work tree: explicit override, else derived from the git dir.
-    let work_tree: Option<PathBuf> = if bare {
-        None
-    } else if let Some(w) = work_tree_env {
+    // The work tree: an explicit override always wins (like C, where a
+    // set work tree forces a non-bare repository); otherwise a bare
+    // repository has none and a non-bare one derives it from the git dir.
+    let work_tree: Option<PathBuf> = if let Some(w) = work_tree_env {
         Some(absolutize(&work_base, &w))
+    } else if bare {
+        None
     } else if let Some(parent) = original_git_dir.parent() {
         if parent.as_os_str().is_empty() {
             Some(work_base.clone())
@@ -590,6 +608,9 @@ fn init_db(ctx: &RepoContext, parsed: &InitArgs, out: &mut dyn Write) -> Result<
     } else {
         Some(work_base.clone())
     };
+    // Effective bareness follows the work tree, like C's
+    // `repo->bare_cfg = !work_tree` in create_default_files().
+    let bare = work_tree.is_none();
 
     // Resolve a `gitdir:` link file (re-init inside a separated work tree).
     let mut git_dir = original_git_dir.clone();
@@ -602,7 +623,7 @@ fn init_db(ctx: &RepoContext, parsed: &InitArgs, out: &mut dyn Write) -> Result<
     let reinit = git_dir.join("HEAD").is_file() || is_symlink(&git_dir.join("HEAD"));
 
     // Format + shared + template configuration from system/global/`-c`.
-    let base = base_config(ctx);
+    let base = base_config(ctx)?;
     let existing: Option<ConfigFile> = std::fs::read(git_dir.join("config"))
         .ok()
         .map(|data| ConfigFile::parse(&data));
@@ -635,7 +656,7 @@ fn init_db(ctx: &RepoContext, parsed: &InitArgs, out: &mut dyn Write) -> Result<
 
     // Copy templates (never overwriting existing files).
     if let Some(tpl) = template_dir {
-        copy_templates(&git_dir, &tpl)?;
+        copy_templates(&git_dir, &tpl.use_dir, &tpl.display)?;
     }
 
     // C re-reads the config after copying templates: a template-provided
@@ -689,13 +710,6 @@ fn init_db(ctx: &RepoContext, parsed: &InitArgs, out: &mut dyn Write) -> Result<
         base.get("init", "defaultsubmodulepathconfig").and_then(git_config::parse_bool).unwrap_or(false),
     )?;
 
-    // Shared permissions fixup over the freshly created git dir.
-    if let Some(s) = shared {
-        if s.is_shared() {
-            adjust_shared_perm(&git_dir, s);
-        }
-    }
-
     // HEAD + initial branch (fresh repos only).
     if !reinit {
         let branch = match &parsed.initial_branch {
@@ -721,6 +735,15 @@ fn init_db(ctx: &RepoContext, parsed: &InitArgs, out: &mut dyn Write) -> Result<
     for d in [&store_dir, &store_dir.join("pack"), &store_dir.join("info")] {
         std::fs::create_dir_all(d)
             .map_err(|e| CommandError::fatal(format!("fatal: {}", io_strerror(&e))))?;
+    }
+
+    // Shared fixup runs last so files created above (HEAD, objects, the
+    // final config) get the shared treatment, like C adjusting each file
+    // as it is created.
+    if let Some(s) = shared {
+        if s.is_shared() {
+            adjust_shared_perm(&git_dir, s);
+        }
     }
 
     // Report (physical path like C's real_pathdup, with trailing slash).
@@ -929,6 +952,16 @@ fn config_perm(value: &str) -> Result<SharedVal, ()> {
     }
 }
 
+/// A template source: where to copy from, and how to name it in diagnostics.
+/// `$GIT_TEMPLATE_DIR` / `init.templatedir` values are used as-is (relative
+/// to the target directory, like C which resolves them after chdir), so the
+/// raw value is what C prints when they are missing; `--template` is
+/// absolutized up front (like C's pre-chdir `absolute_pathdup`).
+struct TemplateSrc {
+    use_dir: PathBuf,
+    display: String,
+}
+
 /// Template dir: `--template` (against the invoking directory, like C
 /// which absolutizes it before chdir) > `$GIT_TEMPLATE_DIR` >
 /// `init.templatedir` (both used as-is, i.e. relative to the target
@@ -939,25 +972,41 @@ fn resolve_template_dir(
     base: &git_config::ConfigSet,
     ctx_cwd: &Path,
     work_base: &Path,
-) -> Option<PathBuf> {
+) -> Option<TemplateSrc> {
     match &parsed.template {
         TemplateOpt::Skip => None,
-        TemplateOpt::Dir(d) => Some(absolutize(ctx_cwd, Path::new(d))),
+        TemplateOpt::Dir(d) => {
+            let abs = absolutize(ctx_cwd, Path::new(d));
+            Some(TemplateSrc { display: abs.to_string_lossy().into_owned(), use_dir: abs })
+        }
         TemplateOpt::Default => {
             if let Some(env) = std::env::var_os("GIT_TEMPLATE_DIR") {
                 let s = env.to_string_lossy().into_owned();
                 if s.is_empty() {
                     return None;
                 }
-                return Some(absolutize(work_base, Path::new(&s)));
+                let use_dir = absolutize(work_base, Path::new(&s));
+                return Some(TemplateSrc { display: s, use_dir });
             }
             if let Some(v) = base.get("init", "templatedir") {
                 if v.is_empty() {
                     return None;
                 }
-                return Some(absolutize(work_base, &expand_tilde(v, work_base)));
+                let expanded = expand_tilde(v, work_base).to_string_lossy().into_owned();
+                let use_dir = absolutize(work_base, Path::new(&expanded));
+                // Absolute values display absolutized; relative ones as-is.
+                let display = if Path::new(&expanded).is_absolute() {
+                    use_dir.to_string_lossy().into_owned()
+                } else {
+                    expanded
+                };
+                return Some(TemplateSrc { display, use_dir });
             }
-            Some(default_template_dir())
+            let def = default_template_dir();
+            Some(TemplateSrc {
+                display: def.to_string_lossy().into_owned(),
+                use_dir: def,
+            })
         }
     }
 }
@@ -992,11 +1041,11 @@ fn default_template_dir() -> PathBuf {
 /// Recursively copy templates (skip dotfiles, never overwrite), like
 /// `copy_templates_1()`. Warns and continues when the dir is missing or has
 /// an unusable repository format.
-fn copy_templates(git_dir: &Path, template_dir: &Path) -> Result<(), CommandError> {
+fn copy_templates(git_dir: &Path, template_dir: &Path, display: &str) -> Result<(), CommandError> {
     let dir = match std::fs::read_dir(template_dir) {
         Ok(d) => d,
         Err(_) => {
-            eprintln!("warning: templates not found in {}", template_dir.display());
+            eprintln!("warning: templates not found in {display}");
             return Ok(());
         }
     };
@@ -1016,8 +1065,7 @@ fn copy_templates(git_dir: &Path, template_dir: &Path) -> Result<(), CommandErro
             };
             if bad {
                 eprintln!(
-                    "warning: not copying templates from '{}': unknown repository format",
-                    template_dir.display()
+                    "warning: not copying templates from '{display}': unknown repository format",
                 );
                 return Ok(());
             }
@@ -1521,16 +1569,19 @@ fn separate_git_dir(original_git_dir: &Path, real_git_dir: &Path) -> Result<(), 
     Ok(())
 }
 
-/// Best-effort `adjust_shared_perm()`: group-writable dirs (setgid) and
-/// group-readable files inside the git dir.
+/// Best-effort `adjust_shared_perm()` over the finished git dir: every file
+/// and directory gets the shared treatment from its creation mode, exactly
+/// like C's `calc_shared_perm()` (positive values OR in bits, custom modes
+/// replace the permission bits; directories gain copied `x` bits + setgid).
+/// Runs after ALL writes (config, HEAD, objects), since C adjusts each file
+/// as it is created.
 fn adjust_shared_perm(git_dir: &Path, shared: SharedVal) {
-    let (file_bits, dir_bits) = match shared {
-        SharedVal::Group => (0o060, 0o070),
-        SharedVal::Everybody => (0o064, 0o075),
-        SharedVal::Mode(0) => return,
-        SharedVal::Mode(m) => (m & 0o077, m & 0o077),
-    };
+    if matches!(shared, SharedVal::Mode(0)) {
+        return;
+    }
     let mut stack = vec![git_dir.to_path_buf()];
+    // Include the top dir itself.
+    apply_shared(shared, git_dir, true);
     while let Some(dir) = stack.pop() {
         let entries = match std::fs::read_dir(&dir) {
             Ok(e) => e,
@@ -1542,30 +1593,46 @@ fn adjust_shared_perm(git_dir: &Path, shared: SharedVal) {
             if md.file_type().is_symlink() {
                 continue;
             }
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                if md.is_dir() {
-                    let mode = md.permissions().mode();
-                    let new = (mode & 0o700) | dir_bits | 0o2000;
-                    let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(new));
-                    stack.push(path);
-                } else {
-                    let mode = md.permissions().mode();
-                    let new = (mode & 0o700) | file_bits;
-                    let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(new));
-                }
+            if md.is_dir() {
+                apply_shared(shared, &path, true);
+                stack.push(path);
+            } else {
+                apply_shared(shared, &path, false);
             }
         }
     }
-    // The git dir itself.
+}
+
+/// C `calc_shared_perm()` + the directory setgid rule from
+/// `adjust_shared_perm()`.
+fn apply_shared(shared: SharedVal, path: &Path, is_dir: bool) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        if let Ok(md) = std::fs::symlink_metadata(git_dir) {
-            let mode = md.permissions().mode();
-            let new = (mode & 0o700) | dir_bits | 0o2000;
-            let _ = std::fs::set_permissions(git_dir, std::fs::Permissions::from_mode(new));
+        let Ok(md) = std::fs::symlink_metadata(path) else { return };
+        let mode = md.permissions().mode();
+        let (neg, mut tweak) = match shared {
+            SharedVal::Group => (false, 0o660),
+            SharedVal::Everybody => (false, 0o664),
+            SharedVal::Mode(0) => return,
+            SharedVal::Mode(m) => (true, m),
+        };
+        if mode & 0o200 == 0 {
+            tweak &= !0o222;
+        }
+        if mode & 0o100 != 0 {
+            tweak |= (tweak & 0o444) >> 2;
+        }
+        let mut new = if neg { (mode & !0o777) | tweak } else { mode | tweak };
+        if is_dir {
+            new |= (new & 0o444) >> 2;
+            // g+s whenever group access was granted (FORCE_DIR_SET_GID).
+            if new & 0o060 != 0 {
+                new |= 0o2000;
+            }
+        }
+        if new & 0o7777 != mode & 0o7777 {
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(new));
         }
     }
 }
