@@ -47,9 +47,9 @@ Generated from `docs/plan/FOLLOWUPS.md` and `docs/plan/conversion-plan.md`.
 |------|--------|-------------|-------|-----------|
 | **B1** | ✅ DONE | `git init` (templates, `--bare`, `--separate-git-dir`, default branch) | `git-command/init.rs` | `t/t0001`, `phaseB01_crosswise` |
 | **B2** | 🟡 PARTIAL | Index extensions: cache-tree (`TREE`) done; REUC, index v3/v4 pending | `git-index` | `t/t0060`, `t/t3007`, `phaseB04_crosswise` |
-| **B3** | ❌ NOT DONE | `git add` (pathspec, ignore integration, refresh, stat handling, `-p`) | `git-command/add.rs` | `t/t3700`, `t/t3701` |
+| **B3** | ✅ DONE | `git add` (pathspecs, ignore integration, `-A`/`-u`/`-n`/`-v`/`-f`, racy-aware, cache-tree parity) | `git-command/add.rs` | `t/t3700`, `phaseB03_crosswise` |
 | **B4** | 🟡 PARTIAL | `git write-tree` (full) + `read-tree` one-way/`--empty`/`-n`/`--index-output`; `read-tree -m`/`-u`/`--prefix` pending | `git-command` | `t/t1000`, `phaseB04_crosswise` |
-| **B5** | ❌ NOT DONE | `git commit` (`-a`, `--amend`, `--allow-empty`, author/committer, editor, signoff) | `git-command/commit.rs` | `t/t7501`, `t/t7502` |
+| **B5** | ✅ DONE | `git commit` (`-a`, `--amend`, `--allow-empty`, author/committer, editor, signoff) | `git-command/commit.rs` | `t/t7501`, `phaseB05_crosswise` |
 | **B6** | ❌ NOT DONE | `git status` full: long/short, `-z`, `--branch`, rename detection, `--ignored` | `git-command/status.rs`, `git-index` | `t/t7508`, `t/t7010` |
 | **B7** | ❌ NOT DONE | `unpack-trees` + `git checkout`/`switch`/`restore`/`reset` (mixed/soft/hard) | new `git-worktree` + `git-command` | `t/t2000`–`t/t2030`, `t/t7102` |
 | **B8** | ❌ NOT DONE | `git rm`, `mv`, `clean` | `git-command` | `t/t3600`, `t/t7001`, `t/t7300` |

@@ -9,7 +9,9 @@ bottom.
 |---|---|---|
 | 2026-09-14 | B1 `git init` | DONE |
 | 2026-09-15 | B2 cache-tree (`TREE`) index extension | DONE (partial: REUC / v3-v4 pending) |
+| 2026-09-15 | B3 `git add` | DONE |
 | 2026-09-15 | B4 `write-tree` / `read-tree` | PARTIAL (one-way + cache-tree) |
+| 2026-09-15 | B5 `git commit` | DONE |
 
 ## Details
 
@@ -95,3 +97,74 @@ unmerged, bad-object and blob-not-tree errors match byte-for-byte. Scoreboard:
 
 Deferred (documented in FOLLOWUPS): `read-tree -m` (two/three-way), `-u`
 (worktree update), `--prefix`; these depend on `unpack-trees` (B7).
+
+### B3 — `git add` — DONE
+
+Implemented in `crates/git-command/src/add.rs` (+ `ignore_util.rs` shared with
+`check-ignore`):
+
+- Pathspec resolution (literal paths, directories, `.`, `*`/`?`/`[` globs via
+  wildmatch without `WM_PATHNAME` like C, absolute paths, `../`, `--`).
+- Modes: default (add+modify+delete restricted to pathspecs), `-A`/`--all`,
+  `-u`/`--update`, `-n`/`--dry-run`, `-v`/`--verbose`, `-f`/`--force`.
+- Ignore integration: per-directory `.gitignore`, `.git/info/exclude`,
+  `core.excludesFile`; ignored directories are skipped silently; explicitly
+  named ignored files produce C's warning + exit 1; globs matching only
+  ignored files report "did not match".
+- C-parity diagnostics: `Nothing specified, nothing added.` + hints,
+  `fatal: pathspec '<p>' did not match any files`, the ignored-files block.
+- Stat-accurate entries (symlinks → mode `120000` with the link target as the
+  blob; exec bit per `core.filemode`).
+- Cache-tree parity: replicate C's `add_to_index` early return — an entry is
+  replaced/invalidated only when its stat record differs (`ie_match_stat`) or
+  it is racily clean (entry mtime ≥ index mtime); only oid/mode changes are
+  reported by `-v`. The result is a **byte-identical index** (including the
+  invalidated `TREE` nodes) versus C git.
+
+Verification: `phaseB03_crosswise.rs` (registered `phaseB03-crosswise`, 4
+tests) — byte-identical stdout/stderr/exit/**index** for `-A`/`-u`/`./dir`/
+glob/literal-file specs, ignored + `-f`, dry-run/verbose reports, no-args,
+bad pathspec, and from a subdirectory. The test pins the index mtime to a
+far-future value so racy handling is deterministic.
+
+Deferred (documented in FOLLOWUPS): `-p`/`-i` interactive, `-N`
+intent-to-add (needs index v3 extended flags), `--refresh`, `--chmod`,
+pathspec magic (`:(...)`), negation inside an ignored directory, and
+clean/smudge/CRLF filters.
+
+### B5 — `git commit` — DONE
+
+Implemented in `crates/git-command/src/commit.rs` (+
+`git-date::Timestamp::format_git_default`):
+
+- Messages: `-m` (repeatable, joined by blank lines), `-F <file>`/`-F -`
+  (stdin), editor fallback via `core.editor`/`GIT_EDITOR`, `--amend
+  --no-edit` reuse; C's default "whitespace" cleanup (strip trailing
+  whitespace, trim blank edges; `#` stripping for editor mode); empty
+  message aborts (`Aborting commit due to empty commit message.`) unless
+  `--allow-empty-message`.
+- `-a` stages tracked modifications/deletions by invoking the validated
+  `add -u` path (writes blobs + refreshed index), then commits.
+- Tree from the index (`treeobj`); parents from HEAD (or HEAD's parents on
+  amend); author/committer idents with `--author`/`--date` and amend
+  author-preservation; commit object written and verified byte-identical.
+- Ref update + reflog: `.git/logs/HEAD` always, `.git/logs/refs/heads/<b>`
+  only when the ref value changes (matches C's no-op-amend behavior);
+  `commit (initial)` / `commit` / `commit (amend)` actions with the subject.
+- Summary output: `[<branch>[ (root-commit)] <short7>] <subject>`, plus
+  `Author:`/`Date:` lines when the author differs or the date is explicit,
+  and the diffstat (`N files changed, X insertions(+), Y deletions(-)` with
+  `create/delete mode` lines) against HEAD (or the parent on amend).
+- Nothing-to-commit report: clean / untracked / modified / deleted / both
+  variants (status-style blocks) and the empty-repo "Initial commit" variant.
+
+Verification: `phaseB05_crosswise.rs` (registered `phaseB05-crosswise`, 3
+tests) — byte-identical stdout/stderr/exit, `rev-parse HEAD`, `cat-file
+commit`, `.git/refs/heads/*` and `.git/logs/*` across a multi-step sequence
+(initial, `-am`, nothing, `--amend --no-edit`, `--allow-empty`, two `-m`,
+`--author`/`--date`, `-F -`), plus all nothing-to-commit variants and the
+empty-repo/empty-message cases.
+
+Deferred (documented in FOLLOWUPS): pathspec commits (`commit -- <paths>`),
+full interactive editor UX, `--porcelain`/`--dry-run`, `-v` diff output,
+hooks, GPG signing, and commit-graph interaction.

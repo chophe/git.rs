@@ -159,7 +159,18 @@ All defined in `docs/plan/test-infrastructure.md`; none implemented yet:
     cache-tree writeback, `--prefix`); `read-tree` one-way/`--empty`/`-n`/
     `--index-output`. Deferred: `read-tree -m` (two/three-way), `-u`
     (worktree update), `--prefix` — depend on `unpack-trees` (B7).
-  - **B3, B5–B10 not started.**
+  - **B3 `git add` DONE** — `phaseB03_crosswise` (4 tests) byte-identical
+    stdout/stderr/exit/index vs C across `-A`/`-u`/`.`/dir/glob/file
+    pathspecs, ignored + `-f`, dry-run/verbose, subdir, no-args, bad
+    pathspec. Racy-aware cache-tree invalidation matches C's `add_to_index`.
+    Deferred: `-p`/`-i`, `-N`, `--refresh`, `--chmod`, pathspec magic,
+    ignored-dir negation, filters.
+  - **B5 `git commit` DONE** — `phaseB05_crosswise` (3 tests) byte-identical
+    commit object, refs, reflogs, stdout/stderr/exit for a multi-step
+    sequence and every nothing-to-commit variant. Deferred: pathspec
+    commits, interactive editor, `--porcelain`/`--dry-run`, `-v`, hooks,
+    GPG signing.
+  - **B6–B10 not started.**
 
 - **Phase 3 (partially done)** — `git-commitgraph` (chunk-format,
   commit-graph read/verify, bloom parse) and `git-odb::midx` (read/verify/write)
