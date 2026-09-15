@@ -14,9 +14,9 @@ where it landed, and how it was verified. Newest entries at the bottom.
 | 2026-08-29 | A7 pretty-printing engine | DONE (core) |
 | 2026-08-29 | A6 `rev-list`/`log` options | DONE (core) |
 | 2026-08-29 | A8 diff options completion | DONE |
-| 2026-08-29 | A9 userdiff hunk headers | planned |
+| 2026-08-29 | A9 userdiff hunk headers | DONE |
 | 2026-08-29 | A10 `count-objects -v` close-out | DONE |
-| 2026-08-29 | A11 `.gitignore` + attributes engine | planned |
+| 2026-08-29 | A11 `.gitignore` + attributes engine | DONE |
 | 2026-08-29 | A12 local timezone dates/idents | DONE (core) |
 | 2026-08-29 | A13 pack delta compression on write | DONE |
 

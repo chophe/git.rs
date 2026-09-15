@@ -290,7 +290,8 @@ fn parse_args(args: &[String]) -> Result<InitArgs, ParseFail> {
                         out.shared = None;
                     } else {
                         let v = inline.as_deref().unwrap_or("");
-                        out.shared = Some(parse_shared(v)?);
+                        out.shared =
+                            Some(parse_shared(v).map_err(|e| ParseFail::Stderr(e.message))?);
                     }
                 }
                 _ => unreachable!(),
@@ -409,18 +410,22 @@ fn base_config(ctx: &RepoContext) -> git_config::ConfigSet {
             } else if p.symlink_metadata().is_err() {
                 // Missing: no system config (upstream semantics).
             } else {
+                // No single compiled path is known (dev builds run from
+                // anywhere), so merge every existing candidate in order;
+                // later files win, matching the effective setup where the
+                // platform file carries the distribution defaults.
                 for cand in system_config_candidates() {
                     if cand.is_file() {
                         load_lenient(&mut cfg, &cand);
-                        break;
                     }
                 }
             }
         } else {
+            // Merge every existing candidate in order (later files win);
+            // see above for why there is no single compiled path here.
             for cand in system_config_candidates() {
                 if cand.is_file() {
                     load_lenient(&mut cfg, &cand);
-                    break;
                 }
             }
         }
@@ -617,14 +622,10 @@ fn init_db(ctx: &RepoContext, parsed: &InitArgs, out: &mut dyn Write) -> Result<
     // > compiled default. Empty means "no templates".
     let template_dir = resolve_template_dir(parsed, &base, &ctx.cwd, &work_base);
 
-    // Create the git dir + object store layout.
-    let object_dir: Option<PathBuf> = std::env::var_os("GIT_OBJECT_DIRECTORY")
-        .map(|d| absolutize(&work_base, Path::new(&d)));
-    let store_dir = object_dir.clone().unwrap_or_else(|| git_dir.join("objects"));
-    for d in [&git_dir, &store_dir, &store_dir.join("pack"), &store_dir.join("info")] {
-        std::fs::create_dir_all(d)
-            .map_err(|e| CommandError::fatal(format!("fatal: {}", io_strerror(&e))))?;
-    }
+    // Create the git dir itself (object store comes after HEAD, like C:
+    // a bad initial branch leaves no objects/ behind).
+    std::fs::create_dir_all(&git_dir)
+        .map_err(|e| CommandError::fatal(format!("fatal: {}", io_strerror(&e))))?;
 
     // --separate-git-dir: move an existing git dir aside, then link it.
     if let Some(real) = &real_git_dir {
@@ -710,6 +711,16 @@ fn init_db(ctx: &RepoContext, parsed: &InitArgs, out: &mut dyn Write) -> Result<
             .map_err(|e| CommandError::fatal(format!("fatal: {}", io_strerror(&e))))?;
     } else if let Some(b) = &parsed.initial_branch {
         eprintln!("warning: re-init: ignored --initial-branch={b}");
+    }
+
+    // Object store layout (after HEAD: C's create_object_directory runs
+    // after the reference database, so invalid branches leave no objects/).
+    let object_dir: Option<PathBuf> = std::env::var_os("GIT_OBJECT_DIRECTORY")
+        .map(|d| absolutize(&work_base, Path::new(&d)));
+    let store_dir = object_dir.clone().unwrap_or_else(|| git_dir.join("objects"));
+    for d in [&store_dir, &store_dir.join("pack"), &store_dir.join("info")] {
+        std::fs::create_dir_all(d)
+            .map_err(|e| CommandError::fatal(format!("fatal: {}", io_strerror(&e))))?;
     }
 
     // Report (physical path like C's real_pathdup, with trailing slash).

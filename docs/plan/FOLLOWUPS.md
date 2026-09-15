@@ -142,6 +142,25 @@ All defined in `docs/plan/test-infrastructure.md`; none implemented yet:
 
 ## D. Phase status
 
+- **Phase A (done)** — all 13 items (A1–A13) implemented and crosswise-verified;
+  see `docs/plan/phase-a/PROGRESS.md`. Only documented sub-item gaps remain
+  under A8 (word-diff/color/pickaxe/…, §C above).
+
+- **Phase B (in progress)** — see `docs/plan/phase-b/PROGRESS.md`.
+  - **B1 `git init` DONE** — `phaseB01_crosswise` (8 tests) byte-parity for
+    stdout/stderr/exit + `.git` layout/HEAD/config across plain/`--bare`/
+    `--separate-git-dir`/`-b`/`init.defaultBranch`/reinit/`--shared=group`/
+    `--template`. Known gaps: `--object-format=sha256` config only (object
+    layer SHA-1-first); `--ref-format=reftable` config only (Phase 7 backend).
+  - **B2 cache-tree DONE (partial)** — `TREE` extension read/write in
+    `git-index` (`cache_tree.rs`). Remaining: REUC; index v3/v4; split/sparse
+    index.
+  - **B4 `write-tree`/`read-tree` PARTIAL** — `write-tree` full (incl. index
+    cache-tree writeback, `--prefix`); `read-tree` one-way/`--empty`/`-n`/
+    `--index-output`. Deferred: `read-tree -m` (two/three-way), `-u`
+    (worktree update), `--prefix` — depend on `unpack-trees` (B7).
+  - **B3, B5–B10 not started.**
+
 - **Phase 3 (partially done)** — `git-commitgraph` (chunk-format,
   commit-graph read/verify, bloom parse) and `git-odb::midx` (read/verify/write)
   are implemented and cross-verified with real git. Summary:

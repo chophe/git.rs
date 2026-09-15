@@ -11,7 +11,7 @@ Generated from `docs/plan/FOLLOWUPS.md` and `docs/plan/conversion-plan.md`.
 | **A1** | ✅ DONE | Collision-detecting SHA-1 (sha1dc) | `git-hash` | `t/t0013` |
 | **A2** | ✅ DONE | `--git-dir`/`--work-tree` threading through all commands | `git-command` (RepoContext) | existing suites |
 | **A3** | ✅ DONE | `cat-file --batch` / `--batch-check` / `%(format)` | `git-command/cat_file.rs` | `t/t1006` |
-| **A4** | ❌ NOT DONE | Pack delta compression in `pack-objects` | `git-odb/pack` | `pack_crosswise` + `git verify-pack` |
+| **A4** | ✅ DONE (as A13) | Pack delta compression in `pack-objects` | `git-odb/pack` | `phaseA13_crosswise` + `git verify-pack` |
 | **A5** | ✅ DONE | Abbreviation resolution (short OIDs, refs, `HEAD~n`) | `git-revision` + `git-command` | `t/t1514`, `t/t1400` |
 | **A6** | ✅ DONE | Local-timezone / calendar parity in `git-date` | `git-date` | `t/t0006` |
 | **A7** | ✅ DONE | Ident offset uses local timezone | `git-command/ident.rs` | `t/t0006` |
@@ -45,10 +45,10 @@ Generated from `docs/plan/FOLLOWUPS.md` and `docs/plan/conversion-plan.md`.
 
 | Item | Status | Description | Crate | Test Gate |
 |------|--------|-------------|-------|-----------|
-| **B1** | ❌ NOT DONE | `git init` (templates, `--bare`, `--separate-git-dir`, default branch) | `git-command/init.rs` | `t/t0001` |
-| **B2** | ❌ NOT DONE | Index extensions: cache-tree (`TREE`), REUC; index v3/v4 read/write | `git-index` | `t/t0060`, `t/t3007` |
+| **B1** | ✅ DONE | `git init` (templates, `--bare`, `--separate-git-dir`, default branch) | `git-command/init.rs` | `t/t0001`, `phaseB01_crosswise` |
+| **B2** | 🟡 PARTIAL | Index extensions: cache-tree (`TREE`) done; REUC, index v3/v4 pending | `git-index` | `t/t0060`, `t/t3007`, `phaseB04_crosswise` |
 | **B3** | ❌ NOT DONE | `git add` (pathspec, ignore integration, refresh, stat handling, `-p`) | `git-command/add.rs` | `t/t3700`, `t/t3701` |
-| **B4** | ❌ NOT DONE | `git write-tree`, `read-tree` (one/two/three-way) | `git-command` | `t/t1000`, `t/t2000` |
+| **B4** | 🟡 PARTIAL | `git write-tree` (full) + `read-tree` one-way/`--empty`/`-n`/`--index-output`; `read-tree -m`/`-u`/`--prefix` pending | `git-command` | `t/t1000`, `phaseB04_crosswise` |
 | **B5** | ❌ NOT DONE | `git commit` (`-a`, `--amend`, `--allow-empty`, author/committer, editor, signoff) | `git-command/commit.rs` | `t/t7501`, `t/t7502` |
 | **B6** | ❌ NOT DONE | `git status` full: long/short, `-z`, `--branch`, rename detection, `--ignored` | `git-command/status.rs`, `git-index` | `t/t7508`, `t/t7010` |
 | **B7** | ❌ NOT DONE | `unpack-trees` + `git checkout`/`switch`/`restore`/`reset` (mixed/soft/hard) | new `git-worktree` + `git-command` | `t/t2000`–`t/t2030`, `t/t7102` |

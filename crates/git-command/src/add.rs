@@ -186,8 +186,25 @@ impl Command for Add {
             exit_status = 1;
         }
 
+        // Build entries for candidate files, keeping only those that actually
+        // change the index (C only reports/invalidates changed paths).
+        let filemode = repo.config.get_bool("core", "filemode").unwrap_or(true);
+        let mut changes: Vec<(String, IndexEntry, Vec<u8>)> = Vec::new();
+        for rel in &walker.adds {
+            let (entry, data) = stat_entry(&work_tree.join(rel), rel, algo, filemode)?;
+            let same = index
+                .entries
+                .iter()
+                .find(|e| e.name == *rel && e.stage == 0)
+                .map(|e| *e == entry)
+                .unwrap_or(false);
+            if !same {
+                changes.push((rel.clone(), entry, data));
+            }
+        }
+
         let mut events: Vec<(String, bool)> = Vec::new();
-        for p in &walker.adds {
+        for (p, _, _) in &changes {
             events.push((p.clone(), true));
         }
         for p in &removes {
@@ -207,21 +224,29 @@ impl Command for Add {
             return if exit_status == 0 { Ok(()) } else { Err(CommandError::silent(1)) };
         }
 
-        if !walker.adds.is_empty() || !removes.is_empty() {
+        if !changes.is_empty() || !removes.is_empty() {
             let store = LooseStore::from_repo(&repo);
-            let filemode = repo.config.get_bool("core", "filemode").unwrap_or(true);
             let remove_set: std::collections::HashSet<&str> =
                 removes.iter().map(String::as_str).collect();
             index.entries.retain(|e| !remove_set.contains(e.name.as_str()));
-            for rel in &walker.adds {
-                let entry = make_entry(&work_tree.join(rel), rel, &store, filemode)?;
+            for (rel, entry, data) in &changes {
+                let obj = Object::from_data(ObjectKind::Blob, data.clone());
+                store.write(&obj).map_err(CommandError::from)?;
                 index.entries.retain(|x| x.name != *rel);
-                index.entries.push(entry);
+                index.entries.push(entry.clone());
             }
             index.entries.sort_by(|a, b| a.name.cmp(&b.name));
-            // `add` invalidates the cache-tree; we drop it entirely (C keeps an
-            // invalidated one), which is always safe for readers.
-            index.cache_tree = None;
+            // C invalidates only the cache-tree nodes covering the changed
+            // paths (`cache_tree_invalidate_path`), keeping other subtrees
+            // valid; replicate that so the index bytes match.
+            if let Some(ct) = index.cache_tree.as_mut() {
+                for (p, _, _) in &changes {
+                    ct.invalidate_path(p);
+                }
+                for p in &removes {
+                    ct.invalidate_path(p);
+                }
+            }
             index.write(&index_path, algo).map_err(|e| CommandError::fatal(format!("fatal: {e}")))?;
         }
 
@@ -328,13 +353,14 @@ fn normalize_path(p: &str) -> String {
     parts.join("/")
 }
 
-/// Build an index entry from the worktree file at `full`.
-fn make_entry(
+/// Build an index entry (with a computed, not written, blob id) plus the raw
+/// blob bytes for the worktree file at `full`.
+fn stat_entry(
     full: &Path,
     rel: &str,
-    store: &LooseStore,
+    algo: git_hash::HashAlgorithm,
     filemode: bool,
-) -> Result<IndexEntry, CommandError> {
+) -> Result<(IndexEntry, Vec<u8>), CommandError> {
     let md = std::fs::symlink_metadata(full)
         .map_err(|e| CommandError::fatal(format!("fatal: unable to stat '{}': {e}", full.display())))?;
     let ft = md.file_type();
@@ -350,9 +376,8 @@ fn make_entry(
     } else {
         (Vec::new(), 0o160000u32)
     };
-    let obj = Object::from_data(ObjectKind::Blob, data);
-    let oid = store.write(&obj).map_err(CommandError::from)?;
-    Ok(IndexEntry {
+    let oid = Object::from_data(ObjectKind::Blob, data.clone()).compute_id(algo);
+    let entry = IndexEntry {
         ctime_sec: md.ctime() as u32,
         ctime_nsec: md.ctime_nsec() as u32,
         mtime_sec: md.mtime() as u32,
@@ -367,5 +392,6 @@ fn make_entry(
         assume_valid: false,
         stage: 0,
         name: rel.to_string(),
-    })
+    };
+    Ok((entry, data))
 }

@@ -63,6 +63,28 @@ impl CacheTree {
         }
         Some(tree)
     }
+
+    /// Invalidate the subtree(s) containing `path` (C
+    /// `cache-tree.c:do_invalidate_path`): every node on the path becomes
+    /// invalid (`entry_count = -1`, no oid); if `path` names a directory that
+    /// now exists as a file, its subtree node is removed.
+    pub fn invalidate_path(&mut self, path: &str) {
+        self.entry_count = -1;
+        self.oid = None;
+        match path.split_once('/') {
+            None => {
+                self.subtrees.retain(|s| s.name != path.as_bytes());
+            }
+            Some((head, rest)) => {
+                for s in &mut self.subtrees {
+                    if s.name == head.as_bytes() {
+                        s.invalidate_path(rest);
+                        break;
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn parse_node(data: &[u8], pos: &mut usize, algo: HashAlgorithm) -> Option<CacheTree> {
@@ -154,6 +176,34 @@ mod tests {
         let bytes = tree.serialize();
         assert_eq!(bytes, b"\x00-1 0\n");
         assert_eq!(CacheTree::parse(&bytes, algo).unwrap(), tree);
+    }
+
+    #[test]
+    fn invalidate_marks_ancestors() {
+        let algo = HashAlgorithm::Sha1;
+        let deep = CacheTree::new(b"deep".to_vec(), 1, *algo.empty_tree(), vec![]);
+        let sub = CacheTree::new(b"sub".to_vec(), 2, *algo.empty_tree(), vec![deep]);
+        let root = CacheTree::new(Vec::new(), 3, *algo.empty_tree(), vec![sub]);
+        let bytes = root.serialize();
+        let mut t = CacheTree::parse(&bytes, algo).unwrap();
+        t.invalidate_path("sub/deep/c.txt");
+        assert_eq!(t.entry_count, -1);
+        assert_eq!(t.subtrees[0].entry_count, -1);
+        assert_eq!(t.subtrees[0].subtrees[0].entry_count, -1);
+        // A sibling directory is untouched.
+        assert_eq!(CacheTree::parse(&bytes, algo).unwrap().subtrees.len(), 1);
+    }
+
+    #[test]
+    fn invalidate_removes_subtree_for_file() {
+        let algo = HashAlgorithm::Sha1;
+        let sub = CacheTree::new(b"sub".to_vec(), 1, *algo.empty_tree(), vec![]);
+        let root = CacheTree::new(Vec::new(), 2, *algo.empty_tree(), vec![sub]);
+        let mut t = CacheTree::parse(&root.serialize(), algo).unwrap();
+        // `sub` is now a file, not a directory: its subtree node disappears.
+        t.invalidate_path("sub");
+        assert_eq!(t.entry_count, -1);
+        assert!(t.subtrees.is_empty());
     }
 
     #[test]
