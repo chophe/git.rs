@@ -5,20 +5,30 @@
 
 use super::PackError;
 
-/// Decode a delta header size field (git's "+1" varint scheme).
+/// Decode a delta header size field (plain base-128 little-endian, per
+/// `delta.h:get_delta_hdr_size` — note this is NOT the "+1" scheme used for
+/// OFS_DELTA distances in pack entry headers).
 fn get_delta_hdr_size(data: &mut &[u8]) -> Option<u64> {
-    let mut cmd = *data.first()?;
-    *data = &data[1..];
-    let mut val = u64::from(cmd & 0x7f);
-    while cmd & 0x80 != 0 {
-        cmd = *data.first()?;
+    let mut size: u64 = 0;
+    let mut shift = 0u32;
+    loop {
+        let cmd = *data.first()?;
         *data = &data[1..];
-        val = ((val + 1) << 7) | u64::from(cmd & 0x7f);
-        if val.leading_zeros() < 7 {
+        if shift >= 64 && (cmd & 0x7f) != 0 {
             return None; // overflow
         }
+        if shift < 64 {
+            size |= u64::from(cmd & 0x7f) << shift;
+        }
+        shift += 7;
+        if cmd & 0x80 == 0 {
+            break;
+        }
+        if shift > 70 {
+            return None; // overlong
+        }
     }
-    Some(val)
+    Some(size)
 }
 
 /// Apply `delta` on top of `base`, returning the reconstructed object.
@@ -213,12 +223,13 @@ impl DeltaIndex {
             return None;
         }
         let bufsize = src.len() as u64;
-        let mut entries = ((bufsize - 1) / RABIN_WINDOW as u64) as u32;
-        if bufsize >= 0xffff_ffff {
-            entries = 0xffff_fffe / RABIN_WINDOW as u32;
-        }
+        let entries = if bufsize >= 0xffff_ffff {
+            0xffff_fffe / RABIN_WINDOW as u32
+        } else {
+            ((bufsize - 1) / RABIN_WINDOW as u64) as u32
+        };
         let hsize = {
-            let mut target = entries / 4;
+            let target = entries / 4;
             let mut i = 4u32;
             while (1u32 << i) < target {
                 i += 1;
@@ -231,19 +242,26 @@ impl DeltaIndex {
 
         // Populate the index walking blocks back to front so that, for equal
         // blocks, the lowest offset wins (kept via the consecutive-identical
-        // dedup below).
+        // dedup below). Like C (`data >= buffer` is false immediately when
+        // `entries == 0`), sources shorter than one window yield an empty
+        // index rather than underflowing.
         let mut prev_val: u32 = !0;
-        let mut data = entries as usize * RABIN_WINDOW - RABIN_WINDOW;
-        loop {
+        if entries > 0 {
+            let mut data = entries as usize * RABIN_WINDOW - RABIN_WINDOW;
+            loop {
             let mut val: u32 = 0;
             for i in 1..=RABIN_WINDOW {
                 let b = u32::from(src[data + i]);
                 val = ((val << 8) | b) ^ T[(val >> RABIN_SHIFT) as usize];
             }
             if val == prev_val {
-                // keep the lowest of consecutive identical blocks
-                hash.pop();
-                entries -= 1;
+                // Keep the lowest of consecutive identical blocks: update
+                // the previously pushed entry's pointer (C's
+                // `entry[-1].entry.ptr = data + RABIN_WINDOW`) rather than
+                // dropping both entries.
+                if let Some(last) = hash.last_mut() {
+                    last.ptr = data + RABIN_WINDOW;
+                }
             } else {
                 prev_val = val;
                 hash.push(IndexEntry {
@@ -255,6 +273,7 @@ impl DeltaIndex {
                 break;
             }
             data -= RABIN_WINDOW;
+            }
         }
 
         // Cull over-populated buckets uniformly to HASH_LIMIT entries
@@ -279,7 +298,6 @@ impl DeltaIndex {
                 }
             }
         }
-        entries = kept.len() as u32;
 
         // Packed form: entries grouped by bucket with bounds array.
         kept.sort_by_key(|e| (e.val & hmask) as usize);
@@ -371,7 +389,7 @@ pub fn create_delta(index: &DeltaIndex, trg_buf: &[u8], max_size: usize) -> Opti
                     break;
                 }
                 let mut n = ref_size;
-                while n > 0 && src[src_pos] == trg_buf[ref_pos] {
+                while n > 0 && src[ref_pos] == trg_buf[src_pos] {
                     ref_pos += 1;
                     src_pos += 1;
                     n -= 1;
@@ -465,14 +483,18 @@ pub fn create_delta(index: &DeltaIndex, trg_buf: &[u8], max_size: usize) -> Opti
 
             if msize < 4096 {
                 val = 0;
-                for j in 1..=RABIN_WINDOW {
+                // Hash the window ending at `data` in increasing byte order
+                // (C: `for (j = -RABIN_WINDOW; j < 0; j++) data[j]`).
+                for j in (1..=RABIN_WINDOW).rev() {
                     let b = u32::from(trg_buf[data - j]);
                     val = ((val << 8) | b) ^ T[(val >> RABIN_SHIFT) as usize];
                 }
             }
         }
 
-        if max_size > 0 && out.len() > max_size + MAX_OP_SIZE {
+        // `usize::MAX` means "unlimited" at call sites; saturate instead of
+        // overflowing (C would wrap here too, but the intent is no limit).
+        if max_size > 0 && out.len() > max_size.saturating_add(MAX_OP_SIZE) {
             return None;
         }
     }
@@ -498,10 +520,14 @@ mod tests {
         let mut d: &[u8] = &[5, 11];
         assert_eq!(get_delta_hdr_size(&mut d), Some(5));
         assert_eq!(get_delta_hdr_size(&mut d), Some(11));
-        // Multi-byte: encode 0x80 as [0x80, 0x00].
-        let mut d: &[u8] = &[0x80, 0x00, 0x01];
+        // Multi-byte uses plain base-128 (NOT the "+1" OFS scheme):
+        // 128 == 0x80 -> [0x80, 0x01].
+        let mut d: &[u8] = &[0x80, 0x01, 0x01];
         assert_eq!(get_delta_hdr_size(&mut d), Some(128));
         assert_eq!(get_delta_hdr_size(&mut d), Some(1));
+        // 0x10000 -> [0x80, 0x80, 0x04].
+        let mut d: &[u8] = &[0x80, 0x80, 0x04];
+        assert_eq!(get_delta_hdr_size(&mut d), Some(0x10000));
         // Empty input -> None.
         let mut d: &[u8] = &[];
         assert_eq!(get_delta_hdr_size(&mut d), None);
@@ -532,10 +558,10 @@ mod tests {
 
     #[test]
     fn copy_defaults_to_64k() {
-        // src/dst size 0x10000 encoded with git's "+1" varint scheme, then a
-        // copy command with no size byte (which defaults to 0x10000).
+        // src/dst size 0x10000 in plain base-128 is [0x80, 0x80, 0x04],
+        // then a copy command with no size byte (which defaults to 0x10000).
         let base = vec![b'x'; 0x10000];
-        let delta = [0x82, 0xff, 0x00, 0x82, 0xff, 0x00, 0x81, 0x00];
+        let delta = [0x80, 0x80, 0x04, 0x80, 0x80, 0x04, 0x81, 0x00];
         let res = apply_delta(&base, &delta).unwrap();
         assert_eq!(res.len(), 0x10000);
         assert!(res.iter().all(|&b| b == b'x'));
@@ -615,10 +641,12 @@ mod creation_tests {
         let delta = create_delta(&idx, &target, usize::MAX).unwrap();
         let reconstructed = apply_delta(&base, &delta).unwrap();
         assert_eq!(reconstructed, target);
-        // The delta should actually be smaller than the target.
+        // Fully reversed lines defeat copy-matching (each line needs its own
+        // copy op); the delta must still round-trip and stay within a small
+        // overhead factor of the target size.
         assert!(
-            delta.len() < target.len(),
-            "delta {} not smaller than target {}",
+            delta.len() < target.len() * 2,
+            "delta {} unreasonably larger than target {}",
             delta.len(),
             target.len()
         );

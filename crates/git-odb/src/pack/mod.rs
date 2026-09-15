@@ -11,7 +11,7 @@ pub mod write;
 pub use file::{EntryKind, PackFile};
 pub use index::PackIndex;
 pub use midx::{Midx, MidxError};
-pub use write::{write_idx, write_pack, PackObject};
+pub use write::{write_idx, write_pack, write_pack_opts, PackObject, PackOptions};
 
 use std::error::Error;
 use std::fmt;
