@@ -1,15 +1,83 @@
-//! `git status --porcelain`: report index/worktree state.
+//! `git status`: report index/worktree state.
+//!
+//! Port of `builtin/commit.c`'s `wt_status` output for the common cases:
+//! the default long format (staged / not-staged / untracked / ignored blocks
+//! with C's hint lines and labels), `--short`/`-s`, `--porcelain[=v1]`,
+//! `-b`/`--branch`, `-z`, `--ignored`, and `--untracked-files`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
 
+use crate::worktree;
 use crate::{Command, CommandError, RepoContext};
 use git_hash::{HashAlgorithm, Oid};
 use git_index::Index;
 use git_object::{parse_commit, parse_tree, Object, ObjectKind};
 use git_odb::Odb;
+use git_refs::RefStore;
 
 pub struct Status;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Format {
+    Long,
+    Short,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum UntrackedMode {
+    No,
+    Normal,
+    All,
+}
+
+struct Args {
+    format: Format,
+    branch: bool,
+    nul: bool,
+    ignored: bool,
+    untracked: UntrackedMode,
+}
+
+impl Args {
+    fn parse(args: &[String]) -> Result<Args, CommandError> {
+        let mut a = Args {
+            format: Format::Long,
+            branch: false,
+            nul: false,
+            ignored: false,
+            untracked: UntrackedMode::Normal,
+        };
+        let mut i = 0usize;
+        while i < args.len() {
+            let arg = &args[i];
+            match arg.as_str() {
+                "--porcelain" | "--porcelain=v1" | "--short" | "-s" => a.format = Format::Short,
+                "--long" => a.format = Format::Long,
+                "-b" | "--branch" => a.branch = true,
+                "--no-branch" => a.branch = false,
+                "-z" | "--null" => a.nul = true,
+                "-v" | "--verbose" => {}
+                "-u" | "--untracked-files" => a.untracked = UntrackedMode::Normal,
+                "-uno" | "--untracked-files=no" => a.untracked = UntrackedMode::No,
+                "-unormal" | "--untracked-files=normal" => a.untracked = UntrackedMode::Normal,
+                "-uall" | "--untracked-files=all" => a.untracked = UntrackedMode::All,
+                "--ignored" | "--ignored=traditional" => a.ignored = true,
+                "--ignored=matching" => a.ignored = true,
+                "--ignored=no" | "--no-ignored" => a.ignored = false,
+                "--no-renames" | "--renames" | "--ahead-behind" | "--no-ahead-behind" | "--show-stash" => {}
+                s if s.starts_with('-') && s.len() > 1 => {
+                    return Err(CommandError::usage(format!(
+                        "error: unknown option `{s}'\nusage: git status [<options>] [--] [<pathspec>...]"
+                    )));
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        Ok(a)
+    }
+}
 
 impl Command for Status {
     fn name(&self) -> &'static str {
@@ -17,85 +85,238 @@ impl Command for Status {
     }
 
     fn run(&self, ctx: &RepoContext, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
-        let mut porcelain = false;
-        for a in args {
-            match a.as_str() {
-                "--porcelain" | "--porcelain=v1" | "--short" => porcelain = true,
-                "-z" => {}
-                s if s.starts_with('-') && s.len() > 1 => {
-                    return Err(CommandError::usage(format!("status: option '{s}' not supported")));
-                }
-                _ => {}
-            }
-        }
-        if !porcelain {
-            return Err(CommandError::usage("status: only --porcelain is supported"));
-        }
-
+        let a = Args::parse(args)?;
         let repo = ctx.repository()?;
         let algo = repo.hash_algo;
         let odb = Odb::from_repo(&repo).map_err(CommandError::from)?;
         let work_tree = repo
             .work_tree
-            .as_ref()
-            .ok_or_else(|| CommandError::error("this operation must be run in a work tree"))?;
-        let index = Index::read(&repo.index_file(), algo)
-            .unwrap_or(Index { version: 2, entries: vec![], cache_tree: None });
+            .clone()
+            .ok_or_else(|| CommandError::fatal("fatal: this operation must be run in a work tree"))?;
+        let filemode = repo.config.get_bool("core", "filemode").unwrap_or(true);
+        let index = Index::read(&repo.index_file(), algo).unwrap_or_default();
 
-        // Base tree from HEAD (or empty when there is no commit yet).
-        let mut base: HashMap<String, Oid> = HashMap::new();
-        if let Some(head) = repo.resolve_head() {
-            if let Ok(commit_obj) = odb.read(&head) {
-                if commit_obj.kind == ObjectKind::Commit {
-                    if let Ok(commit) = parse_commit(&commit_obj.data, algo) {
-                        flatten_tree(&odb, commit.tree, "", &mut base);
+        // HEAD tree (path -> (mode, oid)).
+        let head_oid = repo.resolve_head();
+        let mut head_tree: HashMap<String, (String, Oid)> = HashMap::new();
+        if let Some(head) = head_oid {
+            if let Ok(obj) = odb.read(&head) {
+                if obj.kind == ObjectKind::Commit {
+                    if let Ok(commit) = parse_commit(&obj.data, algo) {
+                        flatten_tree(&odb, commit.tree, "", &mut head_tree);
                     }
                 }
             }
         }
-        let index_entries: HashMap<&str, &git_index::IndexEntry> =
-            index.entries.iter().map(|e| (e.name.as_str(), e)).collect();
+        let index_names: std::collections::HashSet<&str> =
+            index.entries.iter().map(|e| e.name.as_str()).collect();
 
-        // Column X: index vs HEAD; column Y: worktree vs index.
-        let mut lines: Vec<(String, String)> = Vec::new();
-        for e in &index.entries {
-            let x = match base.get(&e.name) {
-                Some(b) if *b == e.oid => ' ',
-                Some(_) => 'M',
-                None => 'A',
-            };
-            let y = match std::fs::read(work_tree.join(&e.name)) {
-                Err(_) => 'D',
-                Ok(data) => {
-                    let blob = Object::from_data(ObjectKind::Blob, data.clone());
-                    let oid = blob.compute_id(algo);
-                    if oid == e.oid {
-                        ' '
+        // Staged (index vs HEAD): A/M/D/T.
+        let mut staged: BTreeMap<String, char> = BTreeMap::new();
+        for e in index.entries.iter().filter(|e| e.stage == 0) {
+            let new_mode = format!("{:o}", e.mode);
+            match head_tree.get(&e.name) {
+                None => {
+                    staged.insert(e.name.clone(), 'A');
+                }
+                Some((mode, oid)) => {
+                    if *oid != e.oid {
+                        staged.insert(e.name.clone(), if type_bits(mode) != type_bits(&new_mode) { 'T' } else { 'M' });
+                    } else if *mode != new_mode {
+                        staged.insert(e.name.clone(), 'M');
+                    }
+                }
+            }
+        }
+        for (path, _) in &head_tree {
+            if !index_names.contains(path.as_str()) {
+                staged.insert(path.clone(), 'D');
+            }
+        }
+
+        // Unstaged (worktree vs index).
+        let unstaged: BTreeMap<String, char> = worktree::unstaged_changes(&work_tree, &index, algo, filemode)
+            .into_iter()
+            .map(|(c, p)| (p, c))
+            .collect();
+
+        // Untracked / ignored.
+        let (mut untracked, ignored) = if a.untracked == UntrackedMode::No {
+            (Vec::new(), Vec::new())
+        } else {
+            worktree::untracked_and_ignored(&repo, &index, a.ignored)
+        };
+        if a.untracked == UntrackedMode::All {
+            untracked = untracked
+                .into_iter()
+                .filter(|p| !p.ends_with('/'))
+                .collect();
+        }
+
+        // Unmerged (stage > 0).
+        let mut unmerged: BTreeMap<String, (char, char)> = BTreeMap::new();
+        {
+            let mut stages: BTreeMap<String, [bool; 4]> = BTreeMap::new();
+            for e in index.entries.iter().filter(|e| e.stage != 0) {
+                stages.entry(e.name.clone()).or_insert([false; 4])[e.stage as usize] = true;
+            }
+            for (path, s) in stages {
+                let xy = match (s[1], s[2], s[3]) {
+                    (_, true, true) => ('U', 'U'),
+                    (true, true, false) => ('A', 'A'),
+                    (true, false, true) => ('D', 'U'),
+                    (false, true, false) => ('A', 'U'),
+                    (false, false, true) => ('U', 'A'),
+                    (true, false, false) => ('D', 'D'),
+                    _ => ('U', 'U'),
+                };
+                unmerged.insert(path, xy);
+            }
+        }
+
+        let branch = branch_label(&repo, head_oid);
+
+        match a.format {
+            Format::Short => {
+                if a.branch {
+                    write!(out, "## {branch}{}", if a.nul { "\0" } else { "\n" })
+                        .map_err(|e| CommandError::fatal(e.to_string()))?;
+                }
+                let mut lines: Vec<(String, char, char)> = Vec::new();
+                let mut paths: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+                paths.extend(staged.keys().cloned());
+                paths.extend(unstaged.keys().cloned());
+                paths.extend(unmerged.keys().cloned());
+                for p in &paths {
+                    let x = unmerged.get(p).map(|(x, _)| *x).or_else(|| staged.get(p).copied()).unwrap_or(' ');
+                    let y = unmerged.get(p).map(|(_, y)| *y).or_else(|| unstaged.get(p).copied()).unwrap_or(' ');
+                    lines.push((p.clone(), x, y));
+                }
+                for p in &untracked {
+                    lines.push((p.clone(), '?', '?'));
+                }
+                if a.ignored {
+                    for p in &ignored {
+                        lines.push((p.clone(), '!', '!'));
+                    }
+                }
+                lines.sort_by(|a, b| a.0.cmp(&b.0));
+                for (p, x, y) in &lines {
+                    if a.nul {
+                        out.write_all(format!("{x}{y} {p}\0").as_bytes())
+                            .map_err(|e| CommandError::fatal(e.to_string()))?;
                     } else {
-                        'M'
+                        writeln!(out, "{x}{y} {p}").map_err(|e| CommandError::fatal(e.to_string()))?;
                     }
                 }
-            };
-            if x != ' ' || y != ' ' {
-                lines.push((e.name.clone(), format!("{x}{y} {}", e.name)));
             }
-        }
-
-        // Untracked files.
-        for path in untracked(work_tree, &index_entries, algo) {
-            lines.push((path.clone(), format!("?? {path}")));
-        }
-
-        // git merges index and untracked entries into one path-sorted list.
-        lines.sort_by(|a, b| a.0.cmp(&b.0));
-        for (_, line) in &lines {
-            writeln!(out, "{line}").map_err(|e| CommandError::fatal(e.to_string()))?;
+            Format::Long => {
+                writeln!(out, "On branch {branch}").map_err(|e| CommandError::fatal(e.to_string()))?;
+                if head_oid.is_none() {
+                    writeln!(out).ok();
+                    writeln!(out, "No commits yet").ok();
+                }
+                if !staged.is_empty() {
+                    writeln!(out).ok();
+                    writeln!(out, "Changes to be committed:").ok();
+                    writeln!(out, "  (use \"git restore --staged <file>...\" to unstage)").ok();
+                    for (p, c) in &staged {
+                        writeln!(out, "\t{:<12}{p}", staged_label(*c)).ok();
+                    }
+                }
+                if !unstaged.is_empty() {
+                    writeln!(out).ok();
+                    writeln!(out, "Changes not staged for commit:").ok();
+                    if unstaged.values().any(|c| *c == 'D') {
+                        writeln!(out, "  (use \"git add/rm <file>...\" to update what will be committed)").ok();
+                    } else {
+                        writeln!(out, "  (use \"git add <file>...\" to update what will be committed)").ok();
+                    }
+                    writeln!(out, "  (use \"git restore <file>...\" to discard changes in working directory)").ok();
+                    for (p, c) in &unstaged {
+                        writeln!(out, "\t{:<12}{p}", staged_label(*c)).ok();
+                    }
+                }
+                if !unmerged.is_empty() {
+                    writeln!(out).ok();
+                    writeln!(out, "Unmerged paths:").ok();
+                    writeln!(out, "  (use \"git add <file>...\" to mark resolution)").ok();
+                    for (p, (x, y)) in &unmerged {
+                        writeln!(out, "\t{:<12}{p}", unmerged_label(*x, *y)).ok();
+                    }
+                }
+                if !untracked.is_empty() {
+                    writeln!(out).ok();
+                    writeln!(out, "Untracked files:").ok();
+                    writeln!(out, "  (use \"git add <file>...\" to include in what will be committed)").ok();
+                    for p in &untracked {
+                        writeln!(out, "\t{p}").ok();
+                    }
+                }
+                if !ignored.is_empty() {
+                    writeln!(out).ok();
+                    writeln!(out, "Ignored files:").ok();
+                    writeln!(out, "  (use \"git add -f <file>...\" to include in what will be committed)").ok();
+                    for p in &ignored {
+                        writeln!(out, "\t{p}").ok();
+                    }
+                }
+                if staged.is_empty() && unmerged.is_empty() {
+                    writeln!(out).ok();
+                    if unstaged.is_empty() && untracked.is_empty() {
+                        writeln!(out, "nothing to commit, working tree clean").ok();
+                    } else if unstaged.is_empty() {
+                        writeln!(out, "nothing added to commit but untracked files present (use \"git add\" to track)").ok();
+                    } else {
+                        writeln!(out, "no changes added to commit (use \"git add\" and/or \"git commit -a\")").ok();
+                    }
+                }
+            }
         }
         Ok(())
     }
 }
 
-fn flatten_tree(odb: &Odb, tree: Oid, prefix: &str, map: &mut HashMap<String, Oid>) {
+fn staged_label(c: char) -> &'static str {
+    match c {
+        'A' => "new file:",
+        'D' => "deleted:",
+        'T' => "typechange:",
+        _ => "modified:",
+    }
+}
+
+fn unmerged_label(x: char, y: char) -> &'static str {
+    match (x, y) {
+        ('U', 'U') => "both modified:",
+        ('A', 'A') => "both added:",
+        ('D', 'U') => "deleted by us:",
+        ('A', 'U') => "added by us:",
+        ('U', 'A') => "added by them:",
+        ('D', 'D') => "both deleted:",
+        _ => "both modified:",
+    }
+}
+
+fn type_bits(mode: &str) -> u32 {
+    u32::from_str_radix(mode, 8).unwrap_or(0) & 0o170000
+}
+
+fn branch_label(repo: &git_core::Repository, head_oid: Option<Oid>) -> String {
+    let refs = RefStore::from_repo(repo);
+    if let Some(target) = refs.head_symbolic_target() {
+        if let Some(short) = target.strip_prefix("refs/heads/") {
+            return short.to_string();
+        }
+    }
+    if let Some(oid) = head_oid {
+        let hex = oid.to_string();
+        return format!("HEAD detached at {}", &hex[..7.min(hex.len())]);
+    }
+    "HEAD (no branch)".to_string()
+}
+
+fn flatten_tree(odb: &Odb, tree: Oid, prefix: &str, map: &mut HashMap<String, (String, Oid)>) {
     if let Ok(obj) = odb.read(&tree) {
         if let Ok(entries) = parse_tree(&obj.data, tree.algorithm()) {
             for e in &entries {
@@ -107,47 +328,9 @@ fn flatten_tree(odb: &Odb, tree: Oid, prefix: &str, map: &mut HashMap<String, Oi
                 if e.is_dir() {
                     flatten_tree(odb, e.oid, &path, map);
                 } else {
-                    map.insert(path, e.oid);
+                    map.insert(path, (e.mode.clone(), e.oid));
                 }
             }
         }
     }
-}
-
-/// Walk the worktree for files not covered by the index.
-fn untracked(
-    work_tree: &std::path::Path,
-    index: &HashMap<&str, &git_index::IndexEntry>,
-    _algo: HashAlgorithm,
-) -> Vec<String> {
-    let mut out = Vec::new();
-    walk(work_tree, work_tree, "", index, &mut out);
-    out
-}
-
-fn walk(
-    root: &std::path::Path,
-    dir: &std::path::Path,
-    prefix: &str,
-    index: &HashMap<&str, &git_index::IndexEntry>,
-    out: &mut Vec<String>,
-) {
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
-    for e in rd.flatten() {
-        let name = e.file_name().to_string_lossy().into_owned();
-        if name == ".git" {
-            continue;
-        }
-        let path = if prefix.is_empty() {
-            name.clone()
-        } else {
-            format!("{prefix}/{name}")
-        };
-        if e.path().is_dir() {
-            walk(root, &e.path(), &path, index, out);
-        } else if !index.contains_key(path.as_str()) {
-            out.push(path);
-        }
-    }
-    let _ = root;
 }

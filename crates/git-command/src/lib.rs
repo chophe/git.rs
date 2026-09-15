@@ -39,6 +39,7 @@ pub mod show_ref;
 pub mod status;
 pub mod treeobj;
 pub mod unpack_objects;
+pub mod worktree;
 pub mod update_index;
 pub mod update_ref;
 pub mod verify_pack;
