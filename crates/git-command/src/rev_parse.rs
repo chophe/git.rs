@@ -115,6 +115,10 @@ impl Command for RevParse {
                     writeln!(out, "{}", repo.git_dir.display())
                         .map_err(|e| CommandError::fatal(e.to_string()))?;
                 }
+                "--show-object-format" => {
+                    writeln!(out, "{}", repo.hash_algo.name())
+                        .map_err(|e| CommandError::fatal(e.to_string()))?;
+                }
                 "--shared-index-path" | "--show-superproject-working-tree" => {
                     // No shared index / superproject support yet: C git
                     // prints nothing for these in plain repositories.
