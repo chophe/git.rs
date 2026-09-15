@@ -11,6 +11,7 @@ pub mod apply;
 pub mod cat_file;
 pub mod check_attr;
 pub mod check_ignore;
+pub mod commit;
 pub mod commit_graph;
 pub mod commit_tree;
 pub mod count_objects;
@@ -369,6 +370,7 @@ pub fn dispatch_with(
         "hash-object" => &hash_object::HashObject,
         "init" => &init::Init,
         "add" => &add::Add,
+        "commit" => &commit::Commit,
         "commit-tree" => &commit_tree::CommitTree,
         "verify-pack" => &verify_pack::VerifyPack,
         "unpack-objects" => &unpack_objects::UnpackObjects,
