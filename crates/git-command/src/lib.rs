@@ -6,6 +6,7 @@
 //! writer (so they are unit-testable without spawning processes) and report
 //! failures through [`CommandError`].
 
+pub mod add;
 pub mod apply;
 pub mod cat_file;
 pub mod check_attr;
@@ -18,6 +19,7 @@ pub mod diff_tree;
 pub mod fsck;
 pub mod hash_object;
 pub mod ident;
+pub mod ignore_util;
 pub mod init;
 pub mod index_pack;
 pub mod log;
@@ -29,14 +31,17 @@ pub mod mktree;
 pub mod multi_pack_index;
 pub mod pack_objects;
 pub mod patch;
+pub mod read_tree;
 pub mod rev_list;
 pub mod rev_parse;
 pub mod show_ref;
 pub mod status;
+pub mod treeobj;
 pub mod unpack_objects;
 pub mod update_index;
 pub mod update_ref;
 pub mod verify_pack;
+pub mod write_tree;
 
 use std::error::Error;
 use std::fmt;
@@ -336,6 +341,7 @@ pub fn dispatch_with(
     let cmd: &dyn Command = match name {
         "hash-object" => &hash_object::HashObject,
         "init" => &init::Init,
+        "add" => &add::Add,
         "commit-tree" => &commit_tree::CommitTree,
         "verify-pack" => &verify_pack::VerifyPack,
         "unpack-objects" => &unpack_objects::UnpackObjects,
@@ -352,6 +358,8 @@ pub fn dispatch_with(
         "diff" => &diff::Diff,
         "ls-files" => &ls_files::LsFiles,
         "update-index" => &update_index::UpdateIndex,
+        "write-tree" => &write_tree::WriteTree,
+        "read-tree" => &read_tree::ReadTree,
         "status" => &status::Status,
         "rev-parse" => &rev_parse::RevParse,
         "show-ref" => &show_ref::ShowRef,
