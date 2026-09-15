@@ -20,7 +20,20 @@ impl Command for Init {
     }
 
     fn run(&self, ctx: &RepoContext, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
-        let parsed = parse_args(args)?;
+        let parsed = match parse_args(args) {
+            Ok(p) => p,
+            Err(ParseFail::Stderr(msg)) => return Err(CommandError::usage(msg)),
+            Err(ParseFail::StdoutUsage { stderr_msg }) => {
+                // C prints the usage block to stdout here (e.g. ambiguous
+                // abbreviations) while the error itself goes to stderr.
+                out.write_all(FULL_USAGE.as_bytes())
+                    .map_err(|e| CommandError::fatal(e.to_string()))?;
+                out.write_all(b"\n")
+                    .map_err(|e| CommandError::fatal(e.to_string()))?;
+                out.flush().map_err(|e| CommandError::fatal(e.to_string()))?;
+                return Err(CommandError::usage(stderr_msg));
+            }
+        };
         if parsed.help {
             // Full usage on stdout with C's trailing blank line; exit 129.
             out.write_all(FULL_USAGE.as_bytes())
@@ -43,16 +56,34 @@ const SHORT_USAGE: &str = "usage: git init [-q | --quiet] [--bare] [--template=<
 /// Full usage (`--help` on stdout; unknown/ambiguous options on stderr).
 const FULL_USAGE: &str = "usage: git init [-q | --quiet] [--bare] [--template=<template-directory>]\n                [--separate-git-dir <git-dir>] [--object-format=<format>]\n                [--ref-format=<format>]\n                [-b <branch-name> | --initial-branch=<branch-name>]\n                [--shared[=<permissions>]] [<directory>]\n\n    --[no-]template <template-directory>\n                          directory from which templates will be used\n    --[no-]bare           create a bare repository\n    --shared[=<permissions>]\n                          specify that the git repository is to be shared amongst several users\n    -q, --[no-]quiet      be quiet\n    --[no-]separate-git-dir <gitdir>\n                          separate git dir from working tree\n    -b, --[no-]initial-branch <name>\n                          override the name of the initial branch\n    --[no-]object-format <hash>\n                          specify the hash algorithm to use\n    --[no-]ref-format <format>\n                          specify the reference format to use\n";
 
-/// `error: ...` + full usage, for unknown/ambiguous options (exit 129).
-fn full_usage_error(first_line: String) -> CommandError {
+/// `error: ...` + full usage, for unknown options (exit 129, all stderr).
+fn full_usage_error(first_line: String) -> ParseFail {
     // FULL_USAGE ends with a single '\n'; eprintln appends the final
     // newline, reproducing C's trailing blank line byte-for-byte.
-    CommandError::usage(format!("{first_line}\n{FULL_USAGE}"))
+    ParseFail::Stderr(format!("{first_line}\n{FULL_USAGE}"))
 }
 
-/// `error: ...` + short usage (exit 129).
-fn short_usage_error(first_line: String) -> CommandError {
-    CommandError::usage(format!("{first_line}\n{SHORT_USAGE}"))
+/// Ambiguous abbreviations: error on stderr, usage block on stdout (129).
+fn stdout_usage_error(first_line: String) -> ParseFail {
+    ParseFail::StdoutUsage { stderr_msg: first_line }
+}
+
+/// Parse failure routing: C prints some usage blocks on stdout.
+#[derive(Debug)]
+enum ParseFail {
+    /// Message (possibly with usage) goes to stderr.
+    Stderr(String),
+    /// `stderr_msg` goes to stderr; the full usage block goes to stdout.
+    StdoutUsage { stderr_msg: String },
+}
+
+impl From<ParseFail> for CommandError {
+    fn from(f: ParseFail) -> CommandError {
+        match f {
+            ParseFail::Stderr(msg) => CommandError::usage(msg),
+            ParseFail::StdoutUsage { stderr_msg } => CommandError::usage(stderr_msg),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,7 +146,7 @@ const LONG_OPTS: &[LongOpt] = &[
     LongOpt { name: "help", takes_value: OptValue::None, negatable: false },
 ];
 
-fn find_long(name: &str) -> Result<&'static LongOpt, CommandError> {
+fn find_long(name: &str) -> Result<&'static LongOpt, ParseFail> {
     if let Some(o) = LONG_OPTS.iter().find(|o| o.name == name) {
         return Ok(o);
     }
@@ -133,13 +164,13 @@ fn find_long(name: &str) -> Result<&'static LongOpt, CommandError> {
             for c in &list[1..] {
                 text.push_str(&format!(" or --{c}"));
             }
-            Err(full_usage_error(format!("error: ambiguous option: {name} (could be {text})")))
+            Err(stdout_usage_error(format!("error: ambiguous option: {name} (could be {text})")))
         }
         (None, _) => Err(full_usage_error(format!("error: unknown option `{name}'"))),
     }
 }
 
-fn parse_args(args: &[String]) -> Result<InitArgs, CommandError> {
+fn parse_args(args: &[String]) -> Result<InitArgs, ParseFail> {
     let mut out = InitArgs::default();
     let mut i = 0usize;
     let mut end_of_opts = false;
@@ -171,10 +202,10 @@ fn parse_args(args: &[String]) -> Result<InitArgs, CommandError> {
                 return Err(full_usage_error(format!("error: unknown option `no-{name}'")));
             }
             if inline.is_some() && opt.takes_value == OptValue::None {
-                return Err(short_usage_error(format!("error: option `{name}' takes no value")));
+                return Err(ParseFail::Stderr(format!("error: option `{name}' takes no value")));
             }
             if negated && inline.is_some() {
-                return Err(short_usage_error(format!("error: option `no-{name}' takes no value")));
+                return Err(ParseFail::Stderr(format!("error: option `no-{name}' takes no value")));
             }
             match opt.name {
                 "help" => out.help = true,
@@ -189,7 +220,7 @@ fn parse_args(args: &[String]) -> Result<InitArgs, CommandError> {
                     } else {
                         i += 1;
                         let v = args.get(i).ok_or_else(|| {
-                            CommandError::usage("error: option `template' requires a value".to_string())
+                            ParseFail::Stderr("error: option `template' requires a value".to_string())
                         })?;
                         out.template = TemplateOpt::Dir(v.clone());
                     }
@@ -202,7 +233,7 @@ fn parse_args(args: &[String]) -> Result<InitArgs, CommandError> {
                     } else {
                         i += 1;
                         let v = args.get(i).ok_or_else(|| {
-                            CommandError::usage(
+                            ParseFail::Stderr(
                                 "error: option `separate-git-dir' requires a value".to_string(),
                             )
                         })?;
@@ -217,7 +248,7 @@ fn parse_args(args: &[String]) -> Result<InitArgs, CommandError> {
                     } else {
                         i += 1;
                         let v = args.get(i).ok_or_else(|| {
-                            CommandError::usage(
+                            ParseFail::Stderr(
                                 "error: option `initial-branch' requires a value".to_string(),
                             )
                         })?;
@@ -232,7 +263,7 @@ fn parse_args(args: &[String]) -> Result<InitArgs, CommandError> {
                     } else {
                         i += 1;
                         let v = args.get(i).ok_or_else(|| {
-                            CommandError::usage(
+                            ParseFail::Stderr(
                                 "error: option `object-format' requires a value".to_string(),
                             )
                         })?;
@@ -247,7 +278,7 @@ fn parse_args(args: &[String]) -> Result<InitArgs, CommandError> {
                     } else {
                         i += 1;
                         let v = args.get(i).ok_or_else(|| {
-                            CommandError::usage(
+                            ParseFail::Stderr(
                                 "error: option `ref-format' requires a value".to_string(),
                             )
                         })?;
@@ -279,7 +310,7 @@ fn parse_args(args: &[String]) -> Result<InitArgs, CommandError> {
                         } else {
                             i += 1;
                             let v = args.get(i).ok_or_else(|| {
-                                CommandError::usage(
+                                ParseFail::Stderr(
                                     "error: switch `b' requires a value".to_string(),
                                 )
                             })?;
