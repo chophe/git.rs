@@ -277,6 +277,9 @@ impl RepoContext {
             repo.bare = true;
             repo.work_tree = None;
         }
+        for (name, value) in config_count_overrides()? {
+            repo.config.set_cli(&name, value.as_deref());
+        }
         for (name, value) in &self.config_overrides {
             repo.config.set_cli(name, value.as_deref());
         }
@@ -290,6 +293,30 @@ fn split_config_pair(s: &str) -> (String, Option<String>) {
         Some((name, value)) => (name.to_string(), Some(value.to_string())),
         None => (s.to_string(), None),
     }
+}
+
+/// `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_n` / `GIT_CONFIG_VALUE_n`: C honors
+/// these like repeated `-c`, applied before real `-c` overrides.
+/// A missing `GIT_CONFIG_KEY_n` is fatal, like C.
+pub fn config_count_overrides() -> Result<Vec<(String, Option<String>)>, CommandError> {
+    let count: usize = std::env::var("GIT_CONFIG_COUNT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let mut out = Vec::with_capacity(count);
+    for i in 0..count {
+        match std::env::var(format!("GIT_CONFIG_KEY_{i}")) {
+            Ok(key) => {
+                let value = std::env::var(format!("GIT_CONFIG_VALUE_{i}")).ok();
+                out.push((key, value));
+            }
+            Err(_) => {
+                eprintln!("error: missing config key GIT_CONFIG_KEY_{i}");
+                return Err(CommandError::fatal("fatal: unable to parse command-line config"));
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// A git subcommand.
