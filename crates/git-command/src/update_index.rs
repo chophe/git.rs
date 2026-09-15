@@ -49,7 +49,7 @@ impl Command for UpdateIndex {
         let store = LooseStore::from_repo(&repo);
 
         let mut index = Index::read(&repo.index_file(), algo)
-            .unwrap_or(Index { version: 2, entries: vec![] });
+            .unwrap_or(Index { version: 2, entries: vec![], cache_tree: None });
 
         for path in &paths {
             let full = work_tree.join(path);

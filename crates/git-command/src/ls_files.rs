@@ -28,7 +28,7 @@ impl Command for LsFiles {
         let algo = repo.hash_algo;
         let index = match Index::read(&repo.index_file(), algo) {
             Ok(i) => i,
-            Err(_) => Index { version: 2, entries: vec![] },
+            Err(_) => Index { version: 2, entries: vec![], cache_tree: None },
         };
 
         if stage {

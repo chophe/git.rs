@@ -11,6 +11,10 @@ use std::path::Path;
 
 use git_hash::{HashAlgorithm, Oid};
 
+pub mod cache_tree;
+
+pub use cache_tree::CacheTree;
+
 pub const CE_VALID: u16 = 0x8000; // assume-valid
 pub const CE_STAGEMASK: u16 = 0x3000;
 pub const CE_NAMEMASK: u16 = 0x0fff;
@@ -64,11 +68,13 @@ impl IndexEntry {
 pub struct Index {
     pub version: u32,
     pub entries: Vec<IndexEntry>,
+    /// The `TREE` (cache-tree) extension, if present.
+    pub cache_tree: Option<CacheTree>,
 }
 
 impl Default for Index {
     fn default() -> Index {
-        Index { version: 2, entries: Vec::new() }
+        Index { version: 2, entries: Vec::new(), cache_tree: None }
     }
 }
 
@@ -207,7 +213,23 @@ impl Index {
             }
         }
 
-        Ok(Index { version, entries })
+        // Optional extensions, each `<4-byte signature><4-byte size><data>`.
+        // The `TREE` extension is decoded; others are skipped.
+        let mut cache_tree = None;
+        while pos + 8 <= trailer {
+            let sig = &data[pos..pos + 4];
+            let size = be32(&data[pos + 4..pos + 8]) as usize;
+            pos += 8;
+            if pos + size > trailer {
+                return Err(IndexError::Truncated);
+            }
+            if sig == b"TREE" {
+                cache_tree = CacheTree::parse(&data[pos..pos + size], algo);
+            }
+            pos += size;
+        }
+
+        Ok(Index { version, entries, cache_tree })
     }
 
     /// Serialize the index (version 2) with a trailing checksum.
@@ -244,6 +266,14 @@ impl Index {
             }
         }
 
+        // Optional extensions (only `TREE` is produced by the port).
+        if let Some(tree) = &self.cache_tree {
+            let data = tree.serialize();
+            out.extend_from_slice(b"TREE");
+            out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            out.extend_from_slice(&data);
+        }
+
         let mut h = algo.hasher();
         h.update(&out);
         out.extend_from_slice(&h.finalize());
@@ -277,6 +307,7 @@ mod tests {
         Index {
             version: 2,
             entries: vec![e1, e2],
+            cache_tree: None,
         }
     }
 
@@ -291,9 +322,51 @@ mod tests {
     }
 
     #[test]
+    fn cache_tree_extension_round_trips() {
+        let algo = HashAlgorithm::Sha1;
+        let tree = CacheTree::new(
+            Vec::new(),
+            1,
+            *algo.empty_tree(),
+            vec![CacheTree::new(b"sub".to_vec(), 1, *algo.empty_blob(), vec![])],
+        );
+        let idx = Index {
+            version: 2,
+            entries: sample().entries,
+            cache_tree: Some(tree.clone()),
+        };
+        let bytes = idx.to_bytes(algo);
+        let parsed = Index::parse(&bytes, algo).unwrap();
+        assert_eq!(parsed.cache_tree, Some(tree));
+    }
+
+    #[test]
+    fn unreadable_cache_tree_is_ignored() {
+        let algo = HashAlgorithm::Sha1;
+        let mut bytes = Index { version: 2, entries: vec![], cache_tree: None }.to_bytes(algo);
+        // Splice in a bogus TREE extension before the checksum.
+        let raw = algo.raw_len();
+        let at = bytes.len() - raw;
+        let mut ext = Vec::new();
+        ext.extend_from_slice(b"TREE");
+        ext.extend_from_slice(&3u32.to_be_bytes());
+        ext.extend_from_slice(b"\0xx");
+        bytes.splice(at..at, ext);
+        // Recompute the checksum over the modified body.
+        let body = &bytes[..bytes.len() - raw];
+        let mut h = algo.hasher();
+        h.update(body);
+        let sum = h.finalize();
+        let n = bytes.len();
+        bytes[n - raw..].copy_from_slice(&sum);
+        let parsed = Index::parse(&bytes, algo).unwrap();
+        assert_eq!(parsed.cache_tree, None);
+    }
+
+    #[test]
     fn empty_index_round_trips() {
         let algo = HashAlgorithm::Sha1;
-        let idx = Index { version: 2, entries: vec![] };
+        let idx = Index { version: 2, entries: vec![], cache_tree: None };
         let bytes = idx.to_bytes(algo);
         let parsed = Index::parse(&bytes, algo).unwrap();
         assert_eq!(parsed.entries.len(), 0);
@@ -323,6 +396,7 @@ mod tests {
         let idx = Index {
             version: 2,
             entries: vec![IndexEntry::bare(*algo.empty_blob(), 0o100644, long_name)],
+            cache_tree: None,
         };
         let bytes = idx.to_bytes(algo);
         let parsed = Index::parse(&bytes, algo).unwrap();

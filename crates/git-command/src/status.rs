@@ -40,7 +40,7 @@ impl Command for Status {
             .as_ref()
             .ok_or_else(|| CommandError::error("this operation must be run in a work tree"))?;
         let index = Index::read(&repo.index_file(), algo)
-            .unwrap_or(Index { version: 2, entries: vec![] });
+            .unwrap_or(Index { version: 2, entries: vec![], cache_tree: None });
 
         // Base tree from HEAD (or empty when there is no commit yet).
         let mut base: HashMap<String, Oid> = HashMap::new();
