@@ -52,6 +52,16 @@ fn run(exe: &Path, dir: &Path, args: &[&str]) -> Output {
         .expect("spawn")
 }
 
+/// Give the index file a far-future mtime so no entry is "racily clean"
+/// (`ce_mtime >= index_mtime`), making C's `ie_match_stat`/racy handling
+/// deterministic and identical for both implementations.
+fn pin_index_mtime(path: &Path) {
+    let t = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
+    if let Ok(f) = std::fs::File::options().write(true).open(path) {
+        let _ = f.set_modified(t);
+    }
+}
+
 struct Report {
     stdout: String,
     stderr: String,
@@ -76,7 +86,10 @@ fn check_add(dir: &Path, snapshot: Option<&[u8]>, args: &[&str]) {
     let (git, rust) = (git().unwrap(), rust_git().unwrap());
     let index = dir.join(".git/index");
     let restore = |snap: Option<&[u8]>| match snap {
-        Some(b) => std::fs::write(&index, b).unwrap(),
+        Some(b) => {
+            std::fs::write(&index, b).unwrap();
+            pin_index_mtime(&index);
+        }
         None => {
             let _ = std::fs::remove_file(&index);
         }
@@ -207,7 +220,10 @@ fn add_from_subdir_matches_c() {
 
     let sub = dir.join("sub");
     let index = dir.join(".git/index");
-    let restore = |s: &[u8]| std::fs::write(&index, s).unwrap();
+    let restore = |s: &[u8]| {
+        std::fs::write(&index, s).unwrap();
+        pin_index_mtime(&index);
+    };
     for args in [vec!["add", "."], vec!["add", "b.txt"], vec!["add", "../a.txt"]] {
         restore(&snap);
         let c = run(Path::new(git), &sub, &args);
