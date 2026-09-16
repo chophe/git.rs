@@ -903,6 +903,76 @@ pub(crate) fn reflog_action(default_msg: String) -> String {
     }
 }
 
+/// Resolve a CLI path against the invoking cwd and verify it stays inside
+/// the worktree, like C's prefix_pathspec validation. Returns the
+/// repo-relative path, or C's "outside repository" fatal (whose shape
+/// differs per command: `rm`/`clean` prefix the message with `{op}: `,
+/// `mv` does not).
+pub(crate) fn resolve_inside(
+    ctx: &RepoContext,
+    repo: &git_core::Repository,
+    work_tree: &Path,
+    op: &str,
+    prefix_arg: bool,
+) -> Result<String, CommandError> {
+    let joined: PathBuf = if Path::new(op).is_absolute() {
+        PathBuf::from(op)
+    } else {
+        ctx.cwd.join(op)
+    };
+    // Canonical worktree for display + comparison.
+    let canon_wt = std::fs::canonicalize(work_tree).unwrap_or_else(|_| work_tree.to_path_buf());
+    // Resolve the path fully when it exists (follows symlinks and `..`);
+    // otherwise canonicalize the nearest existing ancestor and reattach.
+    let canon = std::fs::canonicalize(&joined).ok().or_else(|| {
+        let mut cur = joined.clone();
+        let mut rest: Vec<std::ffi::OsString> = Vec::new();
+        loop {
+            match cur.file_name() {
+                Some(name) => {
+                    rest.push(name.to_os_string());
+                    cur.pop();
+                }
+                None => break,
+            }
+            if let Ok(c) = std::fs::canonicalize(&cur) {
+                let mut out = c;
+                for comp in rest.iter().rev() {
+                    out.push(comp);
+                }
+                // Lexically normalize any `..` left in the remainder.
+                let mut norm = PathBuf::new();
+                for comp in out.components() {
+                    match comp {
+                        std::path::Component::ParentDir => {
+                            norm.pop();
+                        }
+                        c => norm.push(c.as_os_str()),
+                    }
+                }
+                return Some(norm);
+            }
+            if cur.as_os_str().is_empty() {
+                break;
+            }
+        }
+        None
+    });
+    let outside = match canon {
+        Some(c) => !c.starts_with(&canon_wt),
+        None => true,
+    };
+    if outside {
+        let wt = canon_wt.to_string_lossy();
+        return Err(if prefix_arg {
+            CommandError::fatal(format!("fatal: {op}: '{op}' is outside repository at '{wt}'"))
+        } else {
+            CommandError::fatal(format!("fatal: '{op}' is outside repository at '{wt}'"))
+        });
+    }
+    Ok(resolve_path_arg(ctx, repo, op))
+}
+
 /// Map a pathspec operand (CLI form, relative to the invoking cwd) to a
 /// repo-relative literal, like `add`'s resolver (no globs: checkout/reset
 /// pathspecs are matched literally with directory-prefix semantics).
@@ -945,6 +1015,17 @@ pub(crate) fn resolve_path_arg(ctx: &RepoContext, repo: &git_core::Repository, o
 /// or directory prefix)?
 pub(crate) fn spec_matches(spec: &str, path: &str) -> bool {
     path == spec || path.starts_with(&format!("{spec}/"))
+}
+
+/// Does repo-relative path `path` match pathspec `spec`, where `spec` may
+/// contain glob characters (`*`, `?`, `[`)? Pathspec globs let `*` cross
+/// `/` (C calls wildmatch without WM_PATHNAME), unlike `.gitignore`.
+pub(crate) fn spec_matches_glob(spec: &str, path: &str) -> bool {
+    if spec.contains(['*', '?', '[']) {
+        git_attributes::wildmatch(spec, path, 0) == git_attributes::WM_MATCH
+    } else {
+        spec_matches(spec, path)
+    }
 }
 
 /// Validate a new branch name and return its full refname.

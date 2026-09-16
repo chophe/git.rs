@@ -110,13 +110,21 @@ impl Command for Mv {
         }
         let mut moves: Vec<Move> = Vec::new();
         for src in srcs_raw {
+            // Destination for this source (PathBuf joining, so that a "."
+            // or "" destination yields a relative path, never "/base").
+            let join_into = |dir: &str, base: &str| -> String {
+                std::path::Path::new(dir.trim_end_matches('/'))
+                    .join(base)
+                    .to_string_lossy()
+                    .into_owned()
+            };
             // The source must exist in the worktree first ("bad source"),
             // then be tracked ("not under version control").
             if std::fs::symlink_metadata(work_tree.join(src)).is_err() {
                 // Destination for the message: dir-appended when dirish.
                 let dst = if dst_is_dirish {
                     let base = src.rsplit('/').next().unwrap_or(src);
-                    format!("{}/{base}", dst_raw.trim_end_matches('/'))
+                    join_into(&dst_raw, base)
                 } else {
                     dst_raw.clone()
                 };
@@ -140,7 +148,7 @@ impl Command for Mv {
             // Destination for this source.
             let dst = if dst_is_dirish {
                 let base = src.rsplit('/').next().unwrap_or(src);
-                format!("{}/{base}", dst_raw.trim_end_matches('/'))
+                join_into(&dst_raw, base)
             } else {
                 dst_raw.clone()
             };
@@ -204,7 +212,7 @@ impl Command for Mv {
                 if src_is_dir_move && dst_is_real_dir {
                     // Move inside: dst = dst/src-basename.
                     let base = src.rsplit('/').next().unwrap_or(src);
-                    let inner = format!("{}/{base}", dst.trim_end_matches('/'));
+                    let inner = join_into(&dst, base);
                     moves.push(Move { src: src.clone(), dst: inner });
                     continue;
                 }
@@ -250,18 +258,6 @@ impl Command for Mv {
                 new_index.entries.retain(|e| {
                     !(e.name == m.dst || e.name.starts_with(&format!("{}/", m.dst)))
                 });
-            }
-            if let Some(parent) = dst_full.parent() {
-                if !parent.as_os_str().is_empty() {
-                    std::fs::create_dir_all(parent).map_err(|e| {
-                        let err = CommandError::fatal(format!(
-                            "fatal: renaming '{}' failed: {}",
-                            m.src,
-                            io_strerror(&e)
-                        ));
-                        err
-                    })?;
-                }
             }
             if let Err(e) = std::fs::rename(&src_full, &dst_full) {
                 let err = CommandError::fatal(format!(

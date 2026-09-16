@@ -220,12 +220,31 @@ pub fn parse(s: &str, now: Timestamp) -> Result<Timestamp, DateError> {
         return Err(DateError::UnknownFormat);
     }
     if let Some(rest) = t.strip_prefix('@') {
-        let secs = rest.parse::<i64>().map_err(|_| DateError::InvalidInteger)?;
-        return Ok(Timestamp::new(secs, 0));
+        // "@<epoch> [<tz>]": raw timestamp with optional explicit timezone
+        // (test_tick and friends use "@1112911993 -0700").
+        let (secs_s, tz_s) = match rest.split_once(' ') {
+            Some((a, b)) => (a, Some(b)),
+            None => (rest, None),
+        };
+        let secs = secs_s.parse::<i64>().map_err(|_| DateError::InvalidInteger)?;
+        match tz_s {
+            None => return Ok(Timestamp::new(secs, 0)),
+            Some(tz) => match parse_tz(tz.trim()) {
+                Some(off) => return Ok(Timestamp::new(secs, off)),
+                None => return Err(DateError::UnknownFormat),
+            },
+        }
     }
     if let Ok(secs) = t.parse::<i64>() {
         // Pure integer: treat as raw epoch.
         return Ok(Timestamp::new(secs, 0));
+    }
+    // Raw epoch plus explicit timezone ("1112354055 +0200"), the standard
+    // GIT_AUTHOR_DATE / GIT_COMMITTER_DATE form (C's date_basic + match_tz).
+    if let Some((secs_s, tz_s)) = t.split_once(' ') {
+        if let (Ok(secs), Some(tz)) = (secs_s.parse::<i64>(), parse_tz(tz_s.trim())) {
+            return Ok(Timestamp::new(secs, tz));
+        }
     }
 
     if t == "now" {
@@ -433,6 +452,19 @@ mod tests {
         let _tz = lock_tz("UTC");
         assert_eq!(parse("1234567890", NOW).unwrap(), Timestamp::new(1_234_567_890, 0));
         assert_eq!(parse("@1234567890", NOW).unwrap(), Timestamp::new(1_234_567_890, 0));
+        // Raw epoch plus explicit timezone (GIT_AUTHOR_DATE form).
+        assert_eq!(
+            parse("1112354055 +0200", NOW).unwrap(),
+            Timestamp::new(1_112_354_055, 120)
+        );
+        assert_eq!(
+            parse("1112911993 -0700", NOW).unwrap(),
+            Timestamp::new(1_112_911_993, -420)
+        );
+        assert_eq!(
+            parse("@1112911993 -0700", NOW).unwrap(),
+            Timestamp::new(1_112_911_993, -420)
+        );
     }
 
     #[test]
