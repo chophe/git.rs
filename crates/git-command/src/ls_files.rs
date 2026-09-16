@@ -15,18 +15,35 @@ impl Command for LsFiles {
     fn run(&self, ctx: &RepoContext, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
         let mut stage = false;
         let mut error_unmatch = false;
+        let mut format: Option<String> = None;
         let mut operands: Vec<String> = Vec::new();
-        for a in args {
+        let mut i = 0usize;
+        while i < args.len() {
+            let a = &args[i];
             match a.as_str() {
                 "--stage" => stage = true,
                 "--error-unmatch" => error_unmatch = true,
                 "--cached" | "--debug" => {}
+                "--format" => {
+                    i += 1;
+                    format = Some(
+                        args.get(i)
+                            .ok_or_else(|| {
+                                CommandError::usage("error: option `format' requires a value")
+                            })?
+                            .clone(),
+                    );
+                }
+                s if s.starts_with("--format=") => {
+                    format = Some(s["--format=".len()..].to_string())
+                }
                 "--" => continue,
                 s if s.starts_with('-') && s.len() > 1 => {
                     return Err(CommandError::usage(format!("ls-files: option '{s}' not supported")));
                 }
                 s => operands.push(s.to_string()),
             }
+            i += 1;
         }
         let repo = ctx.repository()?;
         let algo = repo.hash_algo;
@@ -57,6 +74,18 @@ impl Command for LsFiles {
                 || specs.iter().any(|s| crate::checkout_core::spec_matches_glob(s, name))
         };
 
+        if let Some(fmt) = &format {
+            // `--format` with %(objectmode)/%(objectname)/%(stage) atoms
+            // (the subset t7001/t3600 need for entry comparisons).
+            for e in &index.entries {
+                if !show(&e.name) {
+                    continue;
+                }
+                writeln!(out, "{}", expand_format(fmt, e)?)
+                    .map_err(|e| CommandError::fatal(e.to_string()))?;
+            }
+            return Ok(());
+        }
         if stage {
             // List every entry with `mode oid stage` columns.
             for e in &index.entries {
@@ -83,4 +112,37 @@ impl Command for LsFiles {
         }
         Ok(())
     }
+}
+
+/// Expand `%(atom)` placeholders for one index entry. Unknown atoms are
+/// fatal, like C (`fatal: unknown format element: ...`, exit 128).
+fn expand_format(fmt: &str, e: &git_index::IndexEntry) -> Result<String, CommandError> {
+    let mut out = String::new();
+    let mut rest = fmt;
+    while let Some(i) = rest.find("%(") {
+        out.push_str(&rest[..i]);
+        let tail = &rest[i + 2..];
+        match tail.find(')') {
+            Some(j) => {
+                let atom = &tail[..j];
+                match atom {
+                    "objectmode" => out.push_str(&format!("{:06o}", e.mode)),
+                    "objectname" => out.push_str(&e.oid.to_string()),
+                    "stage" => out.push_str(&e.stage.to_string()),
+                    _ => {
+                        return Err(CommandError::fatal(format!(
+                            "fatal: unknown format element: {atom}"
+                        )));
+                    }
+                }
+                rest = &tail[j + 1..];
+            }
+            None => {
+                out.push_str(&rest[i..]);
+                break;
+            }
+        }
+    }
+    out.push_str(rest);
+    Ok(out)
 }
