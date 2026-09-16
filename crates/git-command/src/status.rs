@@ -10,9 +10,9 @@ use std::io::Write;
 
 use crate::worktree;
 use crate::{Command, CommandError, RepoContext};
-use git_hash::{HashAlgorithm, Oid};
+use git_hash::Oid;
 use git_index::Index;
-use git_object::{parse_commit, parse_tree, Object, ObjectKind};
+use git_object::{parse_commit, parse_tree, ObjectKind};
 use git_odb::Odb;
 use git_refs::RefStore;
 
@@ -56,7 +56,10 @@ impl Args {
                 "--long" => a.format = Format::Long,
                 "-b" | "--branch" => a.branch = true,
                 "--no-branch" => a.branch = false,
-                "-z" | "--null" => a.nul = true,
+                "-z" | "--null" => {
+                    a.nul = true;
+                    a.format = Format::Short;
+                }
                 "-v" | "--verbose" => {}
                 "-u" | "--untracked-files" => a.untracked = UntrackedMode::Normal,
                 "-uno" | "--untracked-files=no" => a.untracked = UntrackedMode::No,
@@ -66,6 +69,41 @@ impl Args {
                 "--ignored=matching" => a.ignored = true,
                 "--ignored=no" | "--no-ignored" => a.ignored = false,
                 "--no-renames" | "--renames" | "--ahead-behind" | "--no-ahead-behind" | "--show-stash" => {}
+                s if s.starts_with('-') && !s.starts_with("--") && s.len() > 1 => {
+                    let chars: Vec<char> = s[1..].chars().collect();
+                    let mut j = 0usize;
+                    while j < chars.len() {
+                        match chars[j] {
+                            's' => a.format = Format::Short,
+                            'b' => a.branch = true,
+                            'z' => {
+                                a.nul = true;
+                                a.format = Format::Short;
+                            }
+                            'v' => {}
+                            'u' => {
+                                let rest: String = chars[j + 1..].iter().collect();
+                                a.untracked = match rest.as_str() {
+                                    "" | "normal" => UntrackedMode::Normal,
+                                    "no" => UntrackedMode::No,
+                                    "all" => UntrackedMode::All,
+                                    _ => {
+                                        return Err(CommandError::usage(format!(
+                                            "error: unknown option `{s}'\nusage: git status [<options>] [--] [<pathspec>...]"
+                                        )));
+                                    }
+                                };
+                                break;
+                            }
+                            c => {
+                                return Err(CommandError::usage(format!(
+                                    "error: unknown switch `{c}'\nusage: git status [<options>] [--] [<pathspec>...]"
+                                )));
+                            }
+                        }
+                        j += 1;
+                    }
+                }
                 s if s.starts_with('-') && s.len() > 1 => {
                     return Err(CommandError::usage(format!(
                         "error: unknown option `{s}'\nusage: git status [<options>] [--] [<pathspec>...]"
@@ -140,18 +178,20 @@ impl Command for Status {
             .map(|(c, p)| (p, c))
             .collect();
 
-        // Untracked / ignored.
-        let (mut untracked, ignored) = if a.untracked == UntrackedMode::No {
-            (Vec::new(), Vec::new())
+        // Untracked / ignored. Always learn whether untracked paths exist so the
+        // long `nothing to commit` branch can match even when display is off.
+        let (untracked, ignored) = worktree::untracked_and_ignored(
+            &repo,
+            &index,
+            a.ignored,
+            a.untracked != UntrackedMode::All,
+        );
+        let has_untracked = !untracked.is_empty();
+        let untracked = if a.untracked == UntrackedMode::No {
+            Vec::new()
         } else {
-            worktree::untracked_and_ignored(&repo, &index, a.ignored)
+            untracked
         };
-        if a.untracked == UntrackedMode::All {
-            untracked = untracked
-                .into_iter()
-                .filter(|p| !p.ends_with('/'))
-                .collect();
-        }
 
         // Unmerged (stage > 0).
         let mut unmerged: BTreeMap<String, (char, char)> = BTreeMap::new();
@@ -173,6 +213,9 @@ impl Command for Status {
                 unmerged.insert(path, xy);
             }
         }
+
+        // Paths are shown relative to the invocation directory, like C.
+        let disp = |p: &str| display_path(&work_tree, &ctx.cwd, p);
 
         let branch = branch_label(&repo, head_oid);
 
@@ -200,13 +243,13 @@ impl Command for Status {
                         lines.push((p.clone(), '!', '!'));
                     }
                 }
-                lines.sort_by(|a, b| a.0.cmp(&b.0));
                 for (p, x, y) in &lines {
                     if a.nul {
-                        out.write_all(format!("{x}{y} {p}\0").as_bytes())
+                        let dp = disp(&p);
+                        out.write_all(format!("{x}{y} {dp}\0").as_bytes())
                             .map_err(|e| CommandError::fatal(e.to_string()))?;
                     } else {
-                        writeln!(out, "{x}{y} {p}").map_err(|e| CommandError::fatal(e.to_string()))?;
+                        writeln!(out, "{x}{y} {}", disp(&p)).map_err(|e| CommandError::fatal(e.to_string()))?;
                     }
                 }
             }
@@ -215,17 +258,23 @@ impl Command for Status {
                 if head_oid.is_none() {
                     writeln!(out).ok();
                     writeln!(out, "No commits yet").ok();
+                    writeln!(out).ok();
                 }
                 if !staged.is_empty() {
-                    writeln!(out).ok();
                     writeln!(out, "Changes to be committed:").ok();
-                    writeln!(out, "  (use \"git restore --staged <file>...\" to unstage)").ok();
+                    if head_oid.is_none() {
+                        writeln!(out, "  (use \"git rm --cached <file>...\" to unstage)").ok();
+                    } else {
+                        writeln!(out, "  (use \"git restore --staged <file>...\" to unstage)").ok();
+                    }
                     for (p, c) in &staged {
-                        writeln!(out, "\t{:<12}{p}", staged_label(*c)).ok();
+                        writeln!(out, "\t{:<12}{}", staged_label(*c), disp(p)).ok();
                     }
                 }
                 if !unstaged.is_empty() {
-                    writeln!(out).ok();
+                    if !staged.is_empty() || !unmerged.is_empty() {
+                        writeln!(out).ok();
+                    }
                     writeln!(out, "Changes not staged for commit:").ok();
                     if unstaged.values().any(|c| *c == 'D') {
                         writeln!(out, "  (use \"git add/rm <file>...\" to update what will be committed)").ok();
@@ -234,42 +283,82 @@ impl Command for Status {
                     }
                     writeln!(out, "  (use \"git restore <file>...\" to discard changes in working directory)").ok();
                     for (p, c) in &unstaged {
-                        writeln!(out, "\t{:<12}{p}", staged_label(*c)).ok();
+                        writeln!(out, "\t{:<12}{}", staged_label(*c), disp(p)).ok();
                     }
                 }
                 if !unmerged.is_empty() {
-                    writeln!(out).ok();
+                    if !staged.is_empty() {
+                        writeln!(out).ok();
+                    }
                     writeln!(out, "Unmerged paths:").ok();
                     writeln!(out, "  (use \"git add <file>...\" to mark resolution)").ok();
                     for (p, (x, y)) in &unmerged {
-                        writeln!(out, "\t{:<12}{p}", unmerged_label(*x, *y)).ok();
+                        writeln!(out, "\t{:<12}{}", unmerged_label(*x, *y), disp(p)).ok();
                     }
                 }
-                if !untracked.is_empty() {
-                    writeln!(out).ok();
+                if a.untracked != UntrackedMode::No && !untracked.is_empty() {
+                    if !staged.is_empty() || !unstaged.is_empty() || !unmerged.is_empty() {
+                        writeln!(out).ok();
+                    }
                     writeln!(out, "Untracked files:").ok();
                     writeln!(out, "  (use \"git add <file>...\" to include in what will be committed)").ok();
                     for p in &untracked {
-                        writeln!(out, "\t{p}").ok();
+                        writeln!(out, "\t{}", disp(p)).ok();
                     }
                 }
                 if !ignored.is_empty() {
-                    writeln!(out).ok();
+                    if !staged.is_empty() || !unstaged.is_empty() || !unmerged.is_empty() || !untracked.is_empty() {
+                        writeln!(out).ok();
+                    }
                     writeln!(out, "Ignored files:").ok();
                     writeln!(out, "  (use \"git add -f <file>...\" to include in what will be committed)").ok();
                     for p in &ignored {
-                        writeln!(out, "\t{p}").ok();
+                        writeln!(out, "\t{}", disp(p)).ok();
                     }
                 }
-                if staged.is_empty() && unmerged.is_empty() {
+                let show_notice = a.format == Format::Long
+                    && a.untracked == UntrackedMode::No
+                    && (!staged.is_empty() || !unmerged.is_empty());
+                if show_notice
+                    && (!staged.is_empty()
+                        || !unstaged.is_empty()
+                        || !unmerged.is_empty()
+                        || !ignored.is_empty())
+                {
                     writeln!(out).ok();
-                    if unstaged.is_empty() && untracked.is_empty() {
-                        writeln!(out, "nothing to commit, working tree clean").ok();
-                    } else if unstaged.is_empty() {
-                        writeln!(out, "nothing added to commit but untracked files present (use \"git add\" to track)").ok();
-                    } else {
-                        writeln!(out, "no changes added to commit (use \"git add\" and/or \"git commit -a\")").ok();
+                }
+                if show_notice {
+                    writeln!(out, "Untracked files not listed (use -u option to show untracked files)").ok();
+                }
+                if staged.is_empty() && unmerged.is_empty() {
+                    if !unstaged.is_empty() || !untracked.is_empty() || !ignored.is_empty() {
+                        writeln!(out).ok();
                     }
+                    if unstaged.is_empty() && untracked.is_empty() && !has_untracked {
+                        if head_oid.is_none() {
+                            writeln!(out, "nothing to commit (create/copy files and use \"git add\" to track)").ok();
+                        } else {
+                            writeln!(out, "nothing to commit, working tree clean").ok();
+                        }
+                    } else if !unstaged.is_empty() {
+                        writeln!(out, "no changes added to commit (use \"git add\" and/or \"git commit -a\")").ok();
+                    } else if !untracked.is_empty() {
+                        writeln!(out, "nothing added to commit but untracked files present (use \"git add\" to track)").ok();
+                    } else if head_oid.is_none() {
+                        writeln!(out, "nothing to commit (create/copy files and use \"git add\" to track)").ok();
+                    } else if a.untracked == UntrackedMode::No {
+                        writeln!(out, "nothing to commit (use -u to show untracked files)").ok();
+                    } else {
+                        writeln!(out, "nothing added to commit but untracked files present (use \"git add\" to track)").ok();
+                    }
+                } else if !show_notice
+                    && (!staged.is_empty()
+                        || !unstaged.is_empty()
+                        || !unmerged.is_empty()
+                        || !untracked.is_empty()
+                        || !ignored.is_empty())
+                {
+                    writeln!(out).ok();
                 }
             }
         }
@@ -300,6 +389,47 @@ fn unmerged_label(x: char, y: char) -> &'static str {
 
 fn type_bits(mode: &str) -> u32 {
     u32::from_str_radix(mode, 8).unwrap_or(0) & 0o170000
+}
+
+/// Render a repo-relative path the way C does from the current directory:
+/// relative to the cwd with `../` segments as needed (lexically normalized).
+fn display_path(work_tree: &std::path::Path, cwd: &std::path::Path, path: &str) -> String {
+    fn split(p: &str) -> Vec<&str> {
+        p.split('/').filter(|s| !s.is_empty() && *s != ".").collect()
+    }
+    fn norm(comps: Vec<&str>) -> Vec<&str> {
+        let mut out: Vec<&str> = Vec::new();
+        for c in comps {
+            if c == ".." {
+                out.pop();
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+    let (path, dir_suffix) = match path.strip_suffix('/') {
+        Some(base) => (base, "/"),
+        None => (path, ""),
+    };
+    let rel = match cwd.strip_prefix(work_tree) {
+        Ok(rel) => rel,
+        Err(_) => return format!("{path}{dir_suffix}"),
+    };
+    let rel_str = rel.to_string_lossy().into_owned().replace('\\', "/");
+    let mut downs = norm(split(&rel_str));
+    let mut ups = norm(split(path));
+    while !downs.is_empty() && !ups.is_empty() && downs[0] == ups[0] {
+        downs.remove(0);
+        ups.remove(0);
+    }
+    let mut out = String::new();
+    for _ in &downs {
+        out.push_str("../");
+    }
+    out.push_str(&ups.join("/"));
+    out.push_str(dir_suffix);
+    out
 }
 
 fn branch_label(repo: &git_core::Repository, head_oid: Option<Oid>) -> String {
