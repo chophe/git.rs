@@ -27,7 +27,7 @@ impl Command for Clean {
 
     fn run(&self, ctx: &RepoContext, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
         let mut dry_run = false;
-        let mut force = false;
+        let mut force_count = 0u32;
         let mut interactive = false;
         let mut quiet = false;
         let mut dirs = false;
@@ -42,8 +42,8 @@ impl Command for Clean {
             match a.as_str() {
                 "-n" | "--dry-run" => dry_run = true,
                 "--no-dry-run" => dry_run = false,
-                "-f" | "--force" => force = true,
-                "--no-force" => force = false,
+                "-f" | "--force" => force_count += 1,
+                "--no-force" => force_count = 0,
                 "-i" | "--interactive" => interactive = true,
                 "--no-interactive" => interactive = false,
                 "-q" | "--quiet" => quiet = true,
@@ -84,7 +84,7 @@ impl Command for Clean {
                     while j < chars.len() {
                         match chars[j] {
                             'n' => dry_run = true,
-                            'f' => force = true,
+                            'f' => force_count += 1,
                             'q' => quiet = true,
                             'd' => dirs = true,
                             'x' => rm_ignored = true,
@@ -140,6 +140,9 @@ impl Command for Clean {
             .ok_or_else(|| CommandError::fatal("fatal: this operation must be run in a work tree"))?;
 
         // Force requirement (C checks config + -f/-n/-i).
+        let force = force_count > 0;
+        // A doubled -f overrides the nested-repository protection, like C.
+        let keep_nested = force_count < 2;
         if !force && !dry_run {
             let require = repo
                 .config
@@ -302,8 +305,9 @@ impl Command for Clean {
                 // even for explicit pathspecs) and block collapsing (their
                 // contents must survive a parent-dir removal). Only real
                 // repositories count: look-alikes (garbage HEAD/gitfile)
-                // are cleaned like ordinary directories.
-                if is_dir && is_nested_repo(&e.path()) {
+                // are cleaned like ordinary directories. A doubled -f
+                // overrides the protection entirely.
+                if is_dir && keep_nested && is_nested_repo(&e.path()) {
                     nested_dirs.push(rel.clone());
                     continue;
                 }
@@ -444,7 +448,12 @@ impl Command for Clean {
             let full = work_tree.join(p.trim_end_matches('/'));
             let res = match std::fs::symlink_metadata(&full) {
                 Ok(md) if md.file_type().is_dir() && !md.file_type().is_symlink() => {
+                    // Like C, fall back to a plain rmdir when the recursive
+                    // removal cannot even read the directory (an unreadable
+                    // but empty dir is still removable).
                     std::fs::remove_dir_all(&full)
+                        .or_else(|_| std::fs::remove_dir(&full))
+                        .map(|_| ())
                 }
                 Ok(_) => std::fs::remove_file(&full).map(|_| ()),
                 Err(e) => Err(e),
