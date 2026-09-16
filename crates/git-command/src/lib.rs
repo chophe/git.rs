@@ -11,6 +11,8 @@ pub mod apply;
 pub mod cat_file;
 pub mod check_attr;
 pub mod check_ignore;
+pub mod checkout;
+pub mod checkout_core;
 pub mod commit;
 pub mod commit_graph;
 pub mod commit_tree;
@@ -33,10 +35,13 @@ pub mod multi_pack_index;
 pub mod pack_objects;
 pub mod patch;
 pub mod read_tree;
+pub mod reset;
+pub mod restore;
 pub mod rev_list;
 pub mod rev_parse;
 pub mod show_ref;
 pub mod status;
+pub mod switch;
 pub mod treeobj;
 pub mod unpack_objects;
 pub mod worktree;
@@ -390,6 +395,10 @@ pub fn dispatch_with(
         "update-index" => &update_index::UpdateIndex,
         "write-tree" => &write_tree::WriteTree,
         "read-tree" => &read_tree::ReadTree,
+        "reset" => &reset::Reset,
+        "checkout" => &checkout::Checkout,
+        "switch" => &switch::Switch,
+        "restore" => &restore::Restore,
         "status" => &status::Status,
         "rev-parse" => &rev_parse::RevParse,
         "show-ref" => &show_ref::ShowRef,

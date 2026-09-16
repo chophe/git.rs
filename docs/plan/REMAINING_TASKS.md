@@ -50,8 +50,8 @@ Generated from `docs/plan/FOLLOWUPS.md` and `docs/plan/conversion-plan.md`.
 | **B3** | ✅ DONE | `git add` (pathspecs, ignore integration, `-A`/`-u`/`-n`/`-v`/`-f`, racy-aware, cache-tree parity) | `git-command/add.rs` | `t/t3700`, `phaseB03_crosswise` |
 | **B4** | 🟡 PARTIAL | `git write-tree` (full) + `read-tree` one-way/`--empty`/`-n`/`--index-output`; `read-tree -m`/`-u`/`--prefix` pending | `git-command` | `t/t1000`, `phaseB04_crosswise` |
 | **B5** | ✅ DONE | `git commit` (`-a`, `--amend`, `--allow-empty`, author/committer, editor, signoff) | `git-command/commit.rs` | `t/t7501`, `phaseB05_crosswise` |
-| **B6** | ❌ NOT DONE | `git status` full: long/short, `-z`, `--branch`, rename detection, `--ignored` | `git-command/status.rs`, `git-index` | `t/t7508`, `t/t7010` |
-| **B7** | ❌ NOT DONE | `unpack-trees` + `git checkout`/`switch`/`restore`/`reset` (mixed/soft/hard) | new `git-worktree` + `git-command` | `t/t2000`–`t/t2030`, `t/t7102` |
+| **B6** | DONE | `git status` full: long/short, `-z`, `--branch`, renames (staged exact), `--ignored`, stat-based scan | `git-command/status.rs`, `git-index` | `t/t7508`, `t/t7010`, `phaseB06_crosswise` |
+| **B7** | DONE (partial: `checkout`/`switch`/`restore`/`reset` core; `-m` merge, `-p`, `--orphan` pending) | `unpack-trees` + `git checkout`/`switch`/`restore`/`reset` (mixed/soft/hard) | new `git-worktree` crate + `git-command` | `t/t2000`–`t/t2030`, `t/t7102`, `phaseB07_crosswise` |
 | **B8** | ❌ NOT DONE | `git rm`, `mv`, `clean` | `git-command` | `t/t3600`, `t/t7001`, `t/t7300` |
 | **B9** | ❌ NOT DONE | `git show`, `shortlog`, `describe`, `name-rev`, `whatchanged` | `git-command` | `t/t4000`, `t/t4201`, `t/t6120` |
 | **B10** | ❌ NOT DONE | `git apply` completion: `--3way`, `--index`, `--reject`, whitespace, binary | `git-command/apply.rs` | `t/t4103`–`t/t4137` |

@@ -12,6 +12,8 @@ bottom.
 | 2026-09-15 | B3 `git add` | DONE |
 | 2026-09-15 | B4 `write-tree` / `read-tree` | PARTIAL (one-way + cache-tree) |
 | 2026-09-15 | B5 `git commit` | DONE |
+| 2026-09-15 | B6 `git status` full | DONE |
+| 2026-09-16 | B7 checkout/reset/switch/restore | DONE (partial: merge/patch/orphan pending) |
 
 ## Details
 
@@ -168,3 +170,56 @@ empty-repo/empty-message cases.
 Deferred (documented in FOLLOWUPS): pathspec commits (`commit -- <paths>`),
 full interactive editor UX, `--porcelain`/`--dry-run`, `-v` diff output,
 hooks, GPG signing, and commit-graph interaction.
+
+### B6 — `git status` full — DONE
+
+Implemented in `crates/git-command/src/status.rs` (plus shared
+`crates/git-command/src/worktree.rs` also used by `commit`):
+
+- Default long format byte-identical to C: `On branch` (+ `No commits yet`),
+  `Changes to be committed` / `Changes not staged` / `Unmerged paths` /
+  `Untracked files` / `Ignored files` blocks with exact hint lines, label
+  padding, separation/trailer blank lines and every `nothing to commit`
+  variant (clean / untracked / unstaged / initial / `-u`-suppressed).
+- `--short`/`--porcelain`, `-b` (`## branch`), `-z`, `--ignored`,
+  `--untracked-files=no|normal|all`, relative-path display from subdirs,
+  unmerged `XY` codes, exact-rename staging detection.
+- Stat-based worktree scan with the ignore engine (`.gitignore`, excludes).
+
+Verification: `phaseB06_crosswise.rs` (registered `phaseB06-crosswise`, 4
+tests) — byte-identical stdout/exit vs C git for a mixed fixture across all
+flags, state transitions, subdirectory runs, and the unborn repo.
+
+Deferred (documented in FOLLOWUPS): similarity rename detection in worktree
+diffs, ahead/behind + upstream lines, stash summary, pathspec limiting, `-v`.
+
+### B7 — checkout / switch / restore / reset — DONE (partial)
+
+Implemented in `crates/git-command/src/{checkout,checkout_core,reset,restore,switch}.rs`
+(the `checkout_core` unpack-worktree engine is shared by all four):
+
+- `reset`: `--soft` / `--mixed` (default) / `--hard`, `-q`, `--no-refresh`,
+  rev + pathspec disambiguation exactly like C's `parse_args` (explicit
+  `<rev> -- <paths>` skips filename verification), paths form
+  (`reset [<tree-ish>] [--] <paths>`, incl. the `Unstaged changes after
+  reset:` summary), full C usage text on bad options, `ORIG_HEAD` + reflog
+  parity (`reset: moving to <rev>`).
+- `checkout` / `switch` / `restore`: branch switching (incl. `-b`/`-B`/`-c`/`-C`,
+  `--detach`, `-q`, `-f`), paths restore (`--source`, `--staged`), dirty
+  worktree guards, HEAD symref/reflog updates, `Switched to` / `HEAD is now
+  at` messages.
+- Carried-over local modifications are reported as `M\t`/`D\t` lines
+  (C's `show_local_changes`, i.e. `diff-index <new-head>`), except when
+  creating a non-force branch at the same commit, under `-q`, or with `-f`
+  (matches C's merge/reset paths).
+
+Verification: `phaseB07_crosswise.rs` (registered `phaseB07-crosswise`, 3
+tests) — byte-identical stdout/stderr/exit plus resulting worktree files,
+`status --porcelain`, HEAD/symref, index tree, `ORIG_HEAD` and reflog across
+14 reset cases (soft/mixed/hard, paths, `@`, `-q`, errors, unborn) and 12
+checkout/switch/restore cases (branch create/switch/detach, paths restore,
+dirty-overwrite guard).
+
+Deferred (documented in FOLLOWUPS): `checkout -m`/`switch --merge`,
+`reset --merge/--keep`, `-p`/`--patch`, `switch --orphan`, submodule
+handling.

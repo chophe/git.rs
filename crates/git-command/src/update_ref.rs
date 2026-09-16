@@ -77,7 +77,10 @@ impl Command for SymbolicRef {
         let store = RefStore::from_repo(&repo);
         let target = store
             .head_symbolic_target()
-            .ok_or_else(|| CommandError::error(format!("ref '{name}' is not a symbolic ref")))?;
+            .ok_or_else(|| {
+                // C exits 128 here (die), not 1.
+                CommandError::fatal(format!("ref '{name}' is not a symbolic ref"))
+            })?;
         if short {
             let short_name = target.strip_prefix("refs/heads/").unwrap_or(&target);
             writeln!(out, "{short_name}").map_err(|e| CommandError::fatal(e.to_string()))?;

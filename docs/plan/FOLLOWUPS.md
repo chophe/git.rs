@@ -170,7 +170,19 @@ All defined in `docs/plan/test-infrastructure.md`; none implemented yet:
     sequence and every nothing-to-commit variant. Deferred: pathspec
     commits, interactive editor, `--porcelain`/`--dry-run`, `-v`, hooks,
     GPG signing.
-  - **B6–B10 not started.**
+  - **B6 `git status` full DONE** — `phaseB06_crosswise` (4 tests):
+    default long format, `--short`/`--porcelain`, `-b`, `-z`,
+    `--ignored`, `--untracked-files`, relative-path display from subdirs,
+    unborn/no-commits-yet, unmerged XY codes, exact-rename staging
+    detection. Deferred: rename/copy detection in worktree diffs (`-M`
+    similarity), ahead/behind + upstream tracking lines, stash summary,
+    pathspec limiting, `-v` verbose diff output, rename scoring.
+  - **B7 checkout/reset/switch/restore DONE (partial)** — `phaseB07_crosswise`
+    (3 tests): reset soft/mixed/hard + paths, checkout/switch/detach/create,
+    restore paths, dirty guards; byte-identical output + worktree/index/HEAD/
+    ORIG_HEAD/reflog. Deferred: `-m` merge, `reset --merge/--keep`, `-p`,
+    `--orphan`, submodules.
+  - **B8–B10 not started.**
 
 - **Phase 3 (partially done)** — `git-commitgraph` (chunk-format,
   commit-graph read/verify, bloom parse) and `git-odb::midx` (read/verify/write)
