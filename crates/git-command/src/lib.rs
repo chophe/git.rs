@@ -16,6 +16,7 @@ pub mod checkout_core;
 pub mod commit;
 pub mod commit_graph;
 pub mod commit_tree;
+pub mod clean;
 pub mod count_objects;
 pub mod diff;
 pub mod diff_tree;
@@ -32,6 +33,7 @@ pub mod ls_files;
 pub mod ls_tree;
 pub mod mktree;
 pub mod multi_pack_index;
+pub mod mv;
 pub mod pack_objects;
 pub mod patch;
 pub mod read_tree;
@@ -39,6 +41,7 @@ pub mod reset;
 pub mod restore;
 pub mod rev_list;
 pub mod rev_parse;
+pub mod rm;
 pub mod show_ref;
 pub mod status;
 pub mod switch;
@@ -399,6 +402,9 @@ pub fn dispatch_with(
         "checkout" => &checkout::Checkout,
         "switch" => &switch::Switch,
         "restore" => &restore::Restore,
+        "rm" => &rm::Rm,
+        "mv" => &mv::Mv,
+        "clean" => &clean::Clean,
         "status" => &status::Status,
         "rev-parse" => &rev_parse::RevParse,
         "show-ref" => &show_ref::ShowRef,
