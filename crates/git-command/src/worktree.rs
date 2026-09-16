@@ -65,13 +65,14 @@ pub(crate) fn unstaged_changes(
 }
 
 /// Walk the worktree, returning `(untracked, ignored)` path lists. Untracked
-/// directories are collapsed to `dir/`. `ignored` is only populated when
-/// `include_ignored` is set (traditional mode: ignored directories are
-/// collapsed).
+/// directories are collapsed to `dir/` when `collapse_untracked` is set.
+/// `ignored` is only populated when `include_ignored` is set (traditional
+/// mode: ignored directories are collapsed).
 pub(crate) fn untracked_and_ignored(
     repo: &Repository,
     index: &Index,
     include_ignored: bool,
+    collapse_untracked: bool,
 ) -> (Vec<String>, Vec<String>) {
     let work_tree = match repo.work_tree.clone() {
         Some(w) => w,
@@ -87,6 +88,7 @@ pub(crate) fn untracked_and_ignored(
         &tracked,
         &mut engine,
         include_ignored,
+        collapse_untracked,
         &mut untracked,
         &mut ignored,
         false,
@@ -96,6 +98,18 @@ pub(crate) fn untracked_and_ignored(
     (untracked, ignored)
 }
 
+/// C never lists empty directories: an empty dir is neither untracked nor
+/// ignored output.
+fn is_dir_empty(path: &Path, is_dir: bool) -> bool {
+    if !is_dir {
+        return false;
+    }
+    match std::fs::read_dir(path) {
+        Ok(mut rd) => rd.next().is_none(),
+        Err(_) => true,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn walk(
     dir: &Path,
@@ -103,6 +117,7 @@ fn walk(
     tracked: &HashSet<String>,
     engine: &mut git_attributes::ignore::IgnoreEngine,
     include_ignored: bool,
+    collapse_untracked: bool,
     untracked: &mut Vec<String>,
     ignored: &mut Vec<String>,
     ancestor_ignored: bool,
@@ -120,16 +135,16 @@ fn walk(
         let is_dir = md.is_dir();
         let ignored_here = ancestor_ignored || engine.is_excluded(&rel, is_dir).is_some();
         if ignored_here {
-            if include_ignored {
+            if include_ignored && !is_dir_empty(&e.path(), is_dir) {
                 ignored.push(if is_dir { format!("{rel}/") } else { rel });
             }
             continue;
         }
         if is_dir {
             let has_tracked = tracked.iter().any(|t| t.starts_with(&format!("{rel}/")));
-            if has_tracked {
-                walk(&e.path(), &rel, tracked, engine, include_ignored, untracked, ignored, false);
-            } else {
+            if has_tracked || !collapse_untracked {
+                walk(&e.path(), &rel, tracked, engine, include_ignored, collapse_untracked, untracked, ignored, false);
+            } else if !is_dir_empty(&e.path(), true) {
                 untracked.push(format!("{rel}/"));
             }
         } else if !tracked.contains(&rel) {

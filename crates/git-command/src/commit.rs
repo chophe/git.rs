@@ -227,7 +227,7 @@ impl Command for Commit {
         if !a.amend && !a.allow_empty {
             let same_tree = head_commit.as_ref().map(|c| c.tree == tree_oid).unwrap_or(false);
             let empty_repo = head_oid.is_none() && index.entries.is_empty()
-                && crate::worktree::untracked_and_ignored(&repo, &index, false).0.is_empty();
+                && crate::worktree::untracked_and_ignored(&repo, &index, false, true).0.is_empty();
             if same_tree || empty_repo {
                 let branch = head_symref
                     .as_deref()
@@ -352,7 +352,7 @@ fn print_nothing_to_commit(
     let work_tree = repo.work_tree.clone().unwrap_or_default();
     let filemode = repo.config.get_bool("core", "filemode").unwrap_or(true);
     let unstaged = crate::worktree::unstaged_changes(&work_tree, index, algo, filemode);
-    let untracked = crate::worktree::untracked_and_ignored(repo, index, false).0;
+    let untracked = crate::worktree::untracked_and_ignored(repo, index, false, true).0;
 
     writeln!(out, "On branch {branch}").ok();
     if initial {
