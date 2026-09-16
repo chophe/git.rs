@@ -347,7 +347,9 @@ impl Command for Clean {
             }
         }
 
-        // Phase 2: collapse fully-eligible untracked directories (with -d).
+        // Phase 2: collapse fully-eligible untracked directories. With -d,
+        // any fully-eligible dir collapses; without -d only -X collapses,
+        // and only ignored dirs (an empty non-ignored dir is not ignored).
         // A dir collapses when its subtree holds no tracked files and no
         // kept (surviving) untracked files. Empty dirs collapse too.
         let mut removals: Vec<String> = file_infos
@@ -355,7 +357,7 @@ impl Command for Clean {
             .filter(|f| f.eligible)
             .map(|f| f.rel.clone())
             .collect();
-        if dirs {
+        if dirs || only_ignored {
             // Deepest first so nested collapses subsume correctly.
             let mut dirs_sorted = all_dirs.clone();
             dirs_sorted.sort_by_key(|d| std::cmp::Reverse(d.len()));
@@ -389,9 +391,20 @@ impl Command for Clean {
                 if !dir_scoped {
                     continue;
                 }
-                // Ignored dirs collapse only under -X.
+                // Ignored dirs collapse only under -X. Without -d, -X
+                // additionally requires ignored content beneath (an empty
+                // non-ignored dir is kept; a dir whose files are all
+                // ignored collapses as a unit).
                 if !only_ignored && ignored_of(&mut engine, dir, true) {
                     continue;
+                }
+                if only_ignored && !dirs {
+                    let any_file = under.iter().any(|f| !f.tracked);
+                    if !any_file {
+                        continue;
+                    }
+                    // (All files beneath are eligible⟺ignored here —
+                    // anything kept would have blocked above.)
                 }
                 collapsed.insert(dir.clone());
                 let prefix = format!("{dir}/");
@@ -399,10 +412,12 @@ impl Command for Clean {
                 removals.push(format!("{dir}/"));
             }
         }
-        if !dirs {
-            // Without -d, files beneath fully-untracked directories are not
-            // listed (C skips such dirs wholesale) — unless a pathspec
-            // points beneath the directory (explicit paths still apply).
+        if !dirs && !only_ignored {
+            // Without -d (and not -X, which lists eligible files
+            // individually wherever they are), files beneath
+            // fully-untracked directories are not listed (C skips such dirs
+            // wholesale) — unless a pathspec points beneath the directory
+            // (explicit paths still apply).
             removals.retain(|f| {
                 if !f.contains('/') {
                     return true;

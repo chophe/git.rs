@@ -89,10 +89,14 @@ impl Command for Mv {
         let dst_raw = resolved.last().unwrap().clone();
         let srcs_raw = &resolved[..resolved.len() - 1];
 
-        // Destination: existing dir (or trailing slash) means "into".
+        // Destination: an existing dir means "into". A trailing slash on
+        // a missing destination fails for file sources but is used
+        // literally (rename-onto) for directory sources.
+        let dst_raw_op = operands.last().cloned().unwrap_or_default();
         let dst_exists_as_dir = std::fs::symlink_metadata(work_tree.join(&dst_raw))
             .is_ok_and(|m| m.file_type().is_dir() && !m.file_type().is_symlink());
-        let dst_is_dirish = dst_raw.ends_with('/') || dst_exists_as_dir;
+        let dst_raw_is_dirish = dst_raw_op.ends_with('/');
+        let dst_is_dirish = dst_exists_as_dir;
         if srcs_raw.len() > 1 && !dst_is_dirish {
             return Err(CommandError::fatal(format!(
                 "fatal: destination '{dst_raw}' is not a directory"
@@ -136,14 +140,22 @@ impl Command for Mv {
                 }
                 return Err(err);
             }
-            if dst_raw.ends_with('/') && !dst_exists_as_dir {
-                let err = CommandError::fatal(format!(
-                    "fatal: destination directory does not exist, source={src}, destination={dst_raw}"
-                ));
-                if skip_errors {
-                    continue;
+            if dst_raw_is_dirish && !dst_exists_as_dir {
+                // A trailing-slash destination that does not exist fails
+                // for file sources ("destination directory does not
+                // exist"); directory sources rename onto it (creating it).
+                let src_is_dir_here = index.entries.iter().any(|e| {
+                    e.stage == 0 && e.name.starts_with(&format!("{src}/"))
+                });
+                if !src_is_dir_here {
+                    let err = CommandError::fatal(format!(
+                        "fatal: destination directory does not exist, source={src}, destination={dst_raw_op}"
+                    ));
+                    if skip_errors {
+                        continue;
+                    }
+                    return Err(err);
                 }
-                return Err(err);
             }
             // Destination for this source.
             let dst = if dst_is_dirish {
