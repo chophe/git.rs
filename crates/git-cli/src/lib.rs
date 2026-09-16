@@ -1,5 +1,9 @@
 //! The `git` command-line dispatcher.
 
+use std::cell::Cell;
+use std::io::Write as _;
+use std::rc::Rc;
+
 /// The version reported by `git --version`, tracking the C git version this
 /// port is based on.
 pub const VERSION: &str = "2.55.0-540";
@@ -9,6 +13,40 @@ pub const EXIT_USAGE: i32 = 129;
 
 /// Exit code for "command not found".
 pub const EXIT_NOT_FOUND: i32 = 1;
+
+/// Exit code when stdout is a closed pipe (C dies of SIGPIPE: 128 + 13).
+pub const EXIT_SIGPIPE: i32 = 141;
+
+/// Stdout wrapper implementing C's `check_pipe` idiom: Rust ignores SIGPIPE,
+/// so writes to a closed pipe surface as EPIPE errors. Swallow them, remember
+/// the condition, and exit 141 at the end — exactly like dying of SIGPIPE.
+/// Without this, every `git ... | head` pipeline would exit 128 instead.
+struct PipeAwareWriter<W: std::io::Write> {
+    inner: W,
+    broken: Rc<Cell<bool>>,
+}
+
+impl<W: std::io::Write> std::io::Write for PipeAwareWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self.inner.write(buf) {
+            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {
+                self.broken.set(true);
+                Ok(buf.len())
+            }
+            r => r,
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self.inner.flush() {
+            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {
+                self.broken.set(true);
+                Ok(())
+            }
+            r => r,
+        }
+    }
+}
 
 /// Run the `git` command with the given arguments (including the program name
 /// at index 0). Returns the process exit code.
@@ -53,11 +91,19 @@ where
                 return EXIT_USAGE;
             };
             let sub: Vec<String> = cmd_args.iter().skip(1).cloned().collect();
-            let mut stdout = std::io::BufWriter::new(std::io::stdout());
+            let broken = Rc::new(Cell::new(false));
+            let mut stdout = PipeAwareWriter {
+                inner: std::io::BufWriter::new(std::io::stdout()),
+                broken: Rc::clone(&broken),
+            };
             match git_command::dispatch_with(&ctx, &cmd, &sub, &mut stdout) {
                 Some(Ok(())) => {
                     let _ = std::io::Write::flush(&mut stdout);
-                    0
+                    if broken.get() {
+                        EXIT_SIGPIPE
+                    } else {
+                        0
+                    }
                 }
                 Some(Err(e)) => {
                     if !e.message.is_empty() {
