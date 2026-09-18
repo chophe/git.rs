@@ -35,6 +35,7 @@ pub mod mktree;
 pub mod multi_pack_index;
 pub mod mv;
 pub mod pack_objects;
+pub mod show;
 pub mod patch;
 pub mod read_tree;
 pub mod reset;
@@ -419,6 +420,7 @@ pub fn dispatch_with(
         "check-attr" => &check_attr::CheckAttr,
         "apply" => &apply::Apply,
         "index-pack" => &index_pack::IndexPack,
+        "show" => &show::Show,
         "tag" => &show_ref::Tag,
         _ => return None,
     };
