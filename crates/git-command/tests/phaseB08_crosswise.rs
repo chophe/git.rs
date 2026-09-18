@@ -6,8 +6,9 @@
 //! identical resulting state (status, index, worktree files).
 
 use std::collections::BTreeSet;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -35,6 +36,10 @@ fn tempdir(tag: &str) -> PathBuf {
 }
 
 fn hermetic(exe: &Path, dir: &Path, args: &[&str]) -> Output {
+    hermetic_input(exe, dir, args, None)
+}
+
+fn hermetic_input(exe: &Path, dir: &Path, args: &[&str], input: Option<&[u8]>) -> Output {
     let mut cmd = Command::new(exe);
     cmd.args(args).current_dir(dir).env_clear();
     cmd.env("PATH", "/usr/bin:/bin");
@@ -49,7 +54,14 @@ fn hermetic(exe: &Path, dir: &Path, args: &[&str]) -> Output {
     cmd.env("GIT_COMMITTER_EMAIL", "t@example.com");
     cmd.env("GIT_AUTHOR_DATE", "2020-01-01 10:00:00 +0000");
     cmd.env("GIT_COMMITTER_DATE", "2020-01-01 10:00:00 +0000");
-    cmd.output().expect("spawn")
+    if let Some(input) = input {
+        let mut child = cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
+            .spawn().expect("spawn");
+        let _ = child.stdin.take().unwrap().write_all(input);
+        child.wait_with_output().expect("wait")
+    } else {
+        cmd.output().expect("spawn")
+    }
 }
 
 fn shell_success(exe: &Path, dir: &Path, args: &[&str]) {
@@ -97,6 +109,10 @@ fn inventory(dir: &Path) -> BTreeSet<String> {
 }
 
 fn check_case(name: &str, setup: &dyn Fn(&Path), args: &[&str]) {
+    check_case_input(name, setup, args, None);
+}
+
+fn check_case_input(name: &str, setup: &dyn Fn(&Path), args: &[&str], input: Option<&[u8]>) {
     let real = git().expect("system git required");
     let ours = rust_git().expect("rust binary required");
     let c = tempdir(&format!("{name}-c"));
@@ -105,8 +121,8 @@ fn check_case(name: &str, setup: &dyn Fn(&Path), args: &[&str]) {
     tracked_fixture(&r);
     setup(&c);
     setup(&r);
-    let a = hermetic(Path::new(real), &c, args);
-    let b = hermetic(&ours, &r, args);
+    let a = hermetic_input(Path::new(real), &c, args, input);
+    let b = hermetic_input(&ours, &r, args, input);
     assert_eq!(a.status.code(), b.status.code(), "[{name}] exit code");
     assert_eq!(a.stdout, b.stdout, "[{name}] stdout");
     assert_eq!(a.stderr, b.stderr, "[{name}] stderr");
@@ -188,6 +204,156 @@ fn rm_mv_basics() {
     check_case("mv-nondir", &no, &["mv", "a.txt", "b.txt", "c.txt"]);
     check_case("mv-dashdash", &no, &["mv", "--", "a.txt", "q.txt"]);
     check_case("mv-badopt", &no, &["mv", "--bogus", "a.txt", "b.txt"]);
+}
+
+#[test]
+fn rm_pathspec_file_formats() {
+    if git().is_none() || rust_git().is_none() {
+        return;
+    }
+    for (name, contents, options) in [
+        ("lf", &b"a.txt\nb.txt\n"[..], vec![]),
+        ("crlf", &b"a.txt\r\nb.txt\r\n"[..], vec![]),
+        ("unterminated", &b"a.txt\nb.txt"[..], vec![]),
+        ("quoted", &b"\"a.txt\"\r\n\"b.txt\"ignored\n"[..], vec![]),
+        ("octal", &b"\"\\141.txt\"\n"[..], vec![]),
+        ("nul", &b"a.txt\0b.txt\0"[..], vec!["--pathspec-file-nul"]),
+        ("nul-unterminated", &b"a.txt\0b.txt"[..], vec!["--pathspec-file-nul"]),
+        ("embedded-nul", &b"a.txt\0ignored\nb.txt\n"[..], vec![]),
+        ("quoted-nul", &b"\"a.txt\\000ignored\"\n"[..], vec![]),
+        ("duplicates", &b"a.txt\na.txt\n"[..], vec![]),
+        ("glob", &b"*.txt\n"[..], vec![]),
+        ("directory", &b"sub\n"[..], vec!["-r"]),
+        ("directory-no-r", &b"sub\n"[..], vec![]),
+        ("dry", &b"a.txt\n"[..], vec!["-n"]),
+        ("cached", &b"a.txt\n"[..], vec!["--cached"]),
+        ("quiet", &b"a.txt\n"[..], vec!["-q"]),
+        ("missing-match", &b"a.txt\nmissing\n"[..], vec![]),
+        ("ignore-unmatch", &b"a.txt\nmissing\n"[..], vec!["--ignore-unmatch"]),
+        ("no-nul", &b"a.txt\n"[..], vec!["--pathspec-file-nul", "--no-pathspec-file-nul"]),
+    ] {
+        let mut args = vec!["rm", "--pathspec-from-file", "specs"];
+        args.extend(options.iter().copied());
+        check_case(&format!("rm-file-{name}"), &|d| {
+            std::fs::write(d.join("specs"), contents).unwrap();
+        }, &args);
+        let mut args = vec!["rm", "--pathspec-from-file=-"];
+        args.extend(options.iter().copied());
+        check_case_input(&format!("rm-stdin-{name}"), &|_| {}, &args, Some(contents));
+    }
+}
+
+#[test]
+fn rm_pathspec_file_unusual_names() {
+    if git().is_none() || rust_git().is_none() {
+        return;
+    }
+    let names = [
+        ("space name", "space name"),
+        ("tab\tname", "\"tab\\tname\""),
+        ("line\nname", "\"line\\nname\""),
+        ("cr\rname", "\"cr\\rname\""),
+        ("bell\x07name", "\"bell\\aname\""),
+        ("back\x08name", "\"back\\bname\""),
+        ("form\x0cname", "\"form\\fname\""),
+        ("vertical\x0bname", "\"vertical\\vname\""),
+        ("quote\"name", "\"quote\\\"name\""),
+        ("slash\\name", "\"slash\\\\name\""),
+        ("-dash", "-dash"),
+        ("\"literal\"", "\"\\\"literal\\\"\""),
+        ("café", "\"caf\\303\\251\""),
+        ("trailing\r", "\"trailing\\r\""),
+        (" leading ", " leading "),
+    ];
+    let setup = |d: &Path| {
+        for (name, _) in names {
+            std::fs::write(d.join(name), "contents\n").unwrap();
+        }
+        shell_success(Path::new(git().unwrap()), d, &["add", "-A"]);
+        shell_success(Path::new(git().unwrap()), d, &["commit", "-qm", "unusual"]);
+    };
+    for nul in [false, true] {
+        let mut contents = Vec::new();
+        for (name, quoted) in names {
+            contents.extend_from_slice(if nul { name.as_bytes() } else { quoted.as_bytes() });
+            contents.push(if nul { 0 } else { b'\n' });
+        }
+        let mut args = vec!["rm", "--pathspec-from-file=specs"];
+        if nul {
+            args.push("--pathspec-file-nul");
+        }
+        check_case(&format!("rm-unusual-{nul}"), &|d| {
+            setup(d);
+            std::fs::write(d.join("specs"), &contents).unwrap();
+        }, &args);
+    }
+    check_case("rm-file-final-cr", &|d| {
+        setup(d);
+        std::fs::write(d.join("specs"), b"trailing\r").unwrap();
+    }, &["rm", "--pathspec-from-file=specs"]);
+}
+
+#[test]
+fn rm_pathspec_file_errors() {
+    if git().is_none() || rust_git().is_none() {
+        return;
+    }
+    for (name, contents, nul) in [
+        ("empty", &b""[..], false),
+        ("empty-nul", &b""[..], true),
+        ("blank", &b"\n"[..], false),
+        ("blank-crlf", &b"\r\n"[..], false),
+        ("blank-nul", &b"\0"[..], true),
+        ("empty-element", &b"a.txt\n\nb.txt\n"[..], false),
+        ("empty-quoted", &b"\"\"\n"[..], false),
+        ("bad-escape", &b"a.txt\n\"bad\\q\"\n"[..], false),
+        ("unterminated-quote", &b"\"a.txt\n"[..], false),
+        ("short-octal", &b"\"\\14\"\n"[..], false),
+        ("overflow-octal", &b"\"\\400\"\n"[..], false),
+        ("hex-escape", &b"\"\\x61.txt\"\n"[..], false),
+        ("trailing-backslash", &b"\"a.txt\\"[..], false),
+        ("quote-before-empty", &b"\n\"bad\\q\"\n"[..], false),
+        ("nul-quotes-literal", &b"\"a.txt\"\0"[..], true),
+    ] {
+        let mut args = vec!["rm", "--pathspec-from-file=specs"];
+        if nul {
+            args.push("--pathspec-file-nul");
+        }
+        check_case(&format!("rm-file-error-{name}"), &|d| {
+            std::fs::write(d.join("specs"), contents).unwrap();
+        }, &args);
+    }
+    for args in [
+        vec!["rm", "--pathspec-from-file"],
+        vec!["rm", "--pathspec-file-nul"],
+        vec!["rm", "--pathspec-file-nul", "a.txt"],
+        vec!["rm", "--pathspec-file-nul=yes"],
+        vec!["rm", "--no-pathspec-file-nul=yes"],
+        vec!["rm", "--no-pathspec-from-file=yes"],
+        vec!["rm", "--pathspec-from-file=missing"],
+        vec!["rm", "--pathspec-from-file=a.txt/specs"],
+        vec!["rm", "--pathspec-from-file="],
+        vec!["rm", "--pathspec-from-file=sub"],
+        vec!["rm", "--pathspec-from-file=missing", "a.txt"],
+        vec!["rm", "a.txt", "--pathspec-from-file=missing"],
+        vec!["rm", "--pathspec-from-file=missing", "--", "a.txt"],
+        vec!["rm", "--pathspec-from-file=missing", ""],
+        vec!["rm", "--pathspec-from-file=missing", "--no-pathspec-from-file", "a.txt"],
+        vec!["rm", "--pathspec-from-file=missing", "--no-pathspec-from-file", "--pathspec-file-nul"],
+        vec!["-C", "sub", "rm", "--pathspec-from-file=missing"],
+        vec!["-C", "sub", "rm", "--pathspec-from-file=../specs"],
+    ] {
+        check_case(&format!("rm-file-options-{args:?}"), &|d| {
+            std::fs::write(d.join("specs"), b"a.txt\n").unwrap();
+        }, &args);
+    }
+    check_case("rm-file-last-option", &|d| {
+        std::fs::write(d.join("specs"), b"a.txt\n").unwrap();
+    }, &["rm", "--pathspec-from-file=missing", "--pathspec-from-file=specs"]);
+    check_case("rm-file-local-changes", &|d| {
+        std::fs::write(d.join("specs"), b"a.txt\n").unwrap();
+        std::fs::write(d.join("a.txt"), b"modified\n").unwrap();
+    }, &["rm", "--pathspec-from-file=specs"]);
 }
 
 #[test]
