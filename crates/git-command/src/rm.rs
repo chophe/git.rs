@@ -3,10 +3,8 @@
 //! Port of `builtin/rm.c` (`cmd_rm`): `--cached`, `-r`, `-f`, `-n`, `-q`,
 //! `--ignore-unmatch`, and the staged/local-modification safety checks
 //! (including the "different from both the file and the HEAD" case).
-//! Deferred: `--pathspec-from-file` (explicit error), submodules beyond
-//! plain removal, `--sparse` (accepted as a no-op).
 
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 
 use crate::checkout_core::{self, read_head, read_index_or_empty, write_index};
@@ -34,6 +32,8 @@ impl Command for Rm {
         let mut dry_run = false;
         let mut quiet = false;
         let mut ignore_unmatch = false;
+        let mut pathspec_from_file = None;
+        let mut pathspec_file_nul = false;
         let mut operands: Vec<String> = Vec::new();
 
         let mut i = 0usize;
@@ -52,16 +52,33 @@ impl Command for Rm {
                 "--ignore-unmatch" => ignore_unmatch = true,
                 "--no-ignore-unmatch" => ignore_unmatch = false,
                 "--sparse" | "--no-sparse" => {}
-                "--pathspec-from-file" | "--pathspec-file-nul" => {
-                    return Err(CommandError::fatal(format!(
-                        "fatal: rm: option '{a}' is not supported yet"
-                    )));
-                }
+                "--pathspec-file-nul" => pathspec_file_nul = true,
+                "--no-pathspec-file-nul" => pathspec_file_nul = false,
                 s if s.starts_with("--pathspec-from-file=") => {
-                    let _ = s;
-                    return Err(CommandError::fatal(
-                        "fatal: rm: option '--pathspec-from-file' is not supported yet",
+                    pathspec_from_file = Some(s["--pathspec-from-file=".len()..].to_string());
+                }
+                "--pathspec-from-file" => {
+                    i += 1;
+                    if i >= args.len() {
+                        return Err(CommandError::usage(
+                            "error: option `pathspec-from-file' requires a value".to_string(),
+                        ));
+                    }
+                    pathspec_from_file = Some(args[i].clone());
+                }
+                "--no-pathspec-from-file" => pathspec_from_file = None,
+                s if s.starts_with("--no-pathspec-from-file=") => {
+                    return Err(CommandError::usage(
+                        "error: option `no-pathspec-from-file' takes no value".to_string(),
                     ));
+                }
+                s if s.starts_with("--pathspec-file-nul=")
+                    || s.starts_with("--no-pathspec-file-nul=") =>
+                {
+                    let name = s[2..].split('=').next().unwrap_or("");
+                    return Err(CommandError::usage(format!(
+                        "error: option `{name}' takes no value",
+                    )));
                 }
                 "--" => {
                     operands.extend(args[i + 1..].iter().cloned());
@@ -95,13 +112,28 @@ impl Command for Rm {
             i += 1;
         }
 
+        validate_pathspecs(&operands)?;
+        let repo = ctx.repository()?;
+        if let Some(file) = pathspec_from_file {
+            let prefix = checkout_core::resolve_path_arg(ctx, &repo, ".");
+            if !operands.is_empty() || !prefix.is_empty() {
+                return Err(CommandError::fatal(
+                    "fatal: '--pathspec-from-file' and pathspec arguments cannot be used together",
+                ));
+            }
+            operands = read_pathspec_file(ctx, &file, pathspec_file_nul)?;
+            validate_pathspecs(&operands)?;
+        } else if pathspec_file_nul {
+            return Err(CommandError::fatal(
+                "fatal: the option '--pathspec-file-nul' requires '--pathspec-from-file'",
+            ));
+        }
+
         if operands.is_empty() {
             return Err(CommandError::fatal(
                 "fatal: No pathspec was given. Which files should I remove?",
             ));
         }
-
-        let repo = ctx.repository()?;
         let algo = repo.hash_algo;
         let odb = Odb::from_repo(&repo).map_err(CommandError::from)?;
         let work_tree = repo
@@ -126,8 +158,6 @@ impl Command for Rm {
                 }
             }
         }
-        // A directory pathspec also "matches" when it names a worktree dir?
-        // No: rm only operates on tracked (index) paths.
         if !ignore_unmatch {
             for (si, s) in specs.iter().enumerate() {
                 if !hit_any[si] {
@@ -314,6 +344,103 @@ impl Command for Rm {
         }
         Ok(())
     }
+}
+
+fn validate_pathspecs(operands: &[String]) -> Result<(), CommandError> {
+    if operands.iter().any(String::is_empty) {
+        return Err(CommandError::fatal(
+            "fatal: empty string is not a valid pathspec. please use . instead if you meant to match all paths",
+        ));
+    }
+    Ok(())
+}
+
+fn read_pathspec_file(
+    ctx: &RepoContext,
+    file: &str,
+    nul: bool,
+) -> Result<Vec<String>, CommandError> {
+    let mut input: Box<dyn BufRead> = if file == "-" {
+        Box::new(std::io::stdin().lock())
+    } else {
+        let input = std::fs::File::open(ctx.cwd.join(file)).map_err(|e| {
+            CommandError::fatal(format!(
+                "fatal: could not open '{file}' for reading: {}",
+                io_strerror(&e)
+            ))
+        })?;
+        Box::new(BufReader::new(input))
+    };
+    let delimiter = if nul { 0 } else { b'\n' };
+    let mut operands = Vec::new();
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        match input.read_until(delimiter, &mut line) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+        if line.last() == Some(&delimiter) {
+            line.pop();
+            if !nul && line.last() == Some(&b'\r') {
+                line.pop();
+            }
+        }
+        let end = line.iter().position(|b| *b == 0).unwrap_or(line.len());
+        let line = &line[..end];
+        let decoded = if !nul && line.first() == Some(&b'"') {
+            unquote_pathspec(line).ok_or_else(|| {
+                CommandError::fatal(format!(
+                    "fatal: line is badly quoted: {}",
+                    String::from_utf8_lossy(line)
+                ))
+            })?
+        } else {
+            line.to_vec()
+        };
+        let end = decoded.iter().position(|b| *b == 0).unwrap_or(decoded.len());
+        operands.push(String::from_utf8_lossy(&decoded[..end]).into_owned());
+    }
+    Ok(operands)
+}
+
+fn unquote_pathspec(line: &[u8]) -> Option<Vec<u8>> {
+    let mut decoded = Vec::new();
+    let mut i = 1;
+    while i < line.len() {
+        let mut byte = line[i];
+        i += 1;
+        match byte {
+            b'"' => return Some(decoded),
+            b'\\' => {
+                byte = *line.get(i)?;
+                i += 1;
+                byte = match byte {
+                    b'a' => 7,
+                    b'b' => 8,
+                    b'f' => 12,
+                    b'n' => b'\n',
+                    b'r' => b'\r',
+                    b't' => b'\t',
+                    b'v' => 11,
+                    b'\\' | b'"' => byte,
+                    b'0'..=b'3' => {
+                        let second = *line.get(i)?;
+                        let third = *line.get(i + 1)?;
+                        if !(b'0'..=b'7').contains(&second) || !(b'0'..=b'7').contains(&third) {
+                            return None;
+                        }
+                        i += 2;
+                        ((byte - b'0') << 6) | ((second - b'0') << 3) | (third - b'0')
+                    }
+                    _ => return None,
+                };
+            }
+            _ => {}
+        }
+        decoded.push(byte);
+    }
+    None
 }
 
 fn error_block(files: &[String], singular: &str, plural: &str, hint: &str) -> String {
