@@ -360,12 +360,20 @@ fn read_pathspec_file(
     let mut input: Box<dyn BufRead> = if file == "-" {
         Box::new(std::io::stdin().lock())
     } else {
-        let input = std::fs::File::open(ctx.cwd.join(file)).map_err(|e| {
+        let full = ctx.cwd.join(file);
+        let input = std::fs::File::open(&full).map_err(|e| {
             CommandError::fatal(format!(
                 "fatal: could not open '{file}' for reading: {}",
                 io_strerror(&e)
             ))
         })?;
+        // `xfopen` fails on directories (EISDIR); `File::open` succeeds on
+        // them and yields an empty stream, which C treats as "no pathspec".
+        if input.metadata().map(|m| m.is_dir()).unwrap_or(false) {
+            return Err(CommandError::fatal(format!(
+                "fatal: could not open '{file}' for reading: Is a directory"
+            )));
+        }
         Box::new(BufReader::new(input))
     };
     let delimiter = if nul { 0 } else { b'\n' };
