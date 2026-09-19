@@ -329,8 +329,8 @@ impl Command for Rm {
             let mut new_index = read_index_or_empty(&repo)?;
             new_index.entries.retain(|e| !matched(&e.name));
             if let Some(ct) = new_index.cache_tree.as_mut() {
-                for s in &specs {
-                    ct.invalidate_path(s);
+                for p in &removed {
+                    ct.invalidate_path(p);
                 }
             }
             write_index(&repo, &new_index)?;
