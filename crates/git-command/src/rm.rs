@@ -90,7 +90,6 @@ impl Command for Rm {
                 }
                 s if s.starts_with('-') && s.len() > 1 => {
                     // Bundled shorts (-rf, -nq, ...).
-                    let mut ok = true;
                     for c in s[1..].chars() {
                         match c {
                             'r' => recursive = true,
@@ -98,14 +97,12 @@ impl Command for Rm {
                             'n' => dry_run = true,
                             'q' => quiet = true,
                             _ => {
-                                ok = false;
                                 return Err(usage_error(format!(
                                     "error: unknown switch `{c}'"
                                 )));
                             }
                         }
                     }
-                    let _ = ok;
                 }
                 s => operands.push(s.to_string()),
             }
@@ -159,7 +156,7 @@ impl Command for Rm {
             }
         }
         if !ignore_unmatch {
-            for (si, s) in specs.iter().enumerate() {
+            for (si, _s) in specs.iter().enumerate() {
                 if !hit_any[si] {
                     return Err(CommandError::fatal(format!(
                         "fatal: pathspec '{}' did not match any files",
