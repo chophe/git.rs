@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use crate::{CommandError, RepoContext};
 use git_hash::{HashAlgorithm, Oid};
 use git_index::{Index, IndexEntry};
-use git_object::{parse_commit, parse_tag, parse_tree, Object, ObjectKind};
+use git_object::{parse_commit, parse_tag, parse_tree, ObjectKind};
 use git_odb::Odb;
 
 /// One flattened tree entry with its blob payload.
@@ -181,9 +181,20 @@ pub(crate) enum OpInProgress {
     Bisect,
 }
 
+/// An `am` session is in progress when the `rebase-apply` directory holds the
+/// `last`/`next` state files (mirrors C git `am_in_progress()` in
+/// `builtin/am.c`; `wt-status` additionally keys off `rebase-apply/applying`).
+/// Checked before the generic rebase case so am sessions are not mislabeled.
+fn am_in_progress(git_dir: &Path) -> bool {
+    let dir = git_dir.join("rebase-apply");
+    dir.is_dir() && dir.join("last").is_file() && dir.join("next").is_file()
+}
+
 pub(crate) fn operation_in_progress(git_dir: &Path) -> OpInProgress {
     if git_dir.join("MERGE_HEAD").exists() {
         OpInProgress::Merge
+    } else if am_in_progress(git_dir) {
+        OpInProgress::Am
     } else if git_dir.join("rebase-merge").is_dir() || git_dir.join("rebase-apply").is_dir() {
         OpInProgress::Rebase
     } else if git_dir.join("CHERRY_PICK_HEAD").exists() {
