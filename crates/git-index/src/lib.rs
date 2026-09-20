@@ -403,3 +403,50 @@ mod tests {
         assert_eq!(parsed.entries[0].name.len(), 0x2000);
     }
 }
+#[cfg(test)]
+mod props {
+    use super::*;
+    use git_hash::{HashAlgorithm, Oid};
+    use proptest::prelude::*;
+
+    proptest! {
+        /// `Index::parse` is total: arbitrary bytes never panic (both algorithms).
+        #[test]
+        fn parse_never_panics(data: Vec<u8>, sha256: bool) {
+            let algo = if sha256 { HashAlgorithm::Sha256 } else { HashAlgorithm::Sha1 };
+            let _ = Index::parse(&data, algo);
+        }
+
+        /// Constructed v2 indexes (no extensions) round-trip through bytes.
+        #[test]
+        fn round_trip(
+            entries in proptest::collection::vec(
+                (
+                    "[a-z0-9/_.-]{1,24}",
+                    proptest::sample::select(vec![0o100644u32, 0o100755u32, 0o120000u32]),
+                    proptest::collection::vec(any::<u8>(), 20),
+                ),
+                0..8,
+            )
+        ) {
+            let algo = HashAlgorithm::Sha1;
+            let idx = Index {
+                version: 2,
+                entries: entries
+                    .into_iter()
+                    .map(|(name, mode, hash)| IndexEntry::bare(Oid::new(algo, &hash), mode, name))
+                    .collect(),
+                cache_tree: None,
+            };
+            let bytes = idx.to_bytes(algo);
+            let parsed = Index::parse(&bytes, algo).expect("serialized index parses");
+            prop_assert_eq!(parsed.version, 2);
+            prop_assert_eq!(parsed.entries.len(), idx.entries.len());
+            for (a, b) in parsed.entries.iter().zip(idx.entries.iter()) {
+                prop_assert_eq!(&a.name, &b.name);
+                prop_assert_eq!(a.oid, b.oid);
+                prop_assert_eq!(a.mode, b.mode);
+            }
+        }
+    }
+}
