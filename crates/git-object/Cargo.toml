@@ -8,3 +8,6 @@ description = "Git object model: kinds, headers, and object ids"
 
 [dependencies]
 git-hash = { path = "../git-hash" }
+
+[dev-dependencies]
+proptest = "1"

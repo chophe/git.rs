@@ -236,3 +236,36 @@ mod tests {
         assert_eq!(&bytes[hlen..], b"abc");
     }
 }
+
+#[cfg(test)]
+mod props {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn arb_kind() -> impl Strategy<Value = ObjectKind> {
+        prop_oneof![
+            Just(ObjectKind::Blob),
+            Just(ObjectKind::Tree),
+            Just(ObjectKind::Commit),
+            Just(ObjectKind::Tag),
+        ]
+    }
+
+    proptest! {
+        /// `Object::parse` is total: arbitrary bytes never panic.
+        #[test]
+        fn parse_never_panics(data: Vec<u8>) {
+            let _ = Object::parse(&data);
+        }
+
+        /// `to_bytes`/`parse` round-trips for every kind over arbitrary payloads.
+        #[test]
+        fn round_trip(kind in arb_kind(), data: Vec<u8>) {
+            let obj = Object::from_data(kind, data);
+            let bytes = obj.to_bytes();
+            let (parsed, hlen) = Object::parse(&bytes).expect("serialized objects parse");
+            prop_assert_eq!(&bytes[hlen..], &parsed.data[..]);
+            prop_assert_eq!(parsed, obj);
+        }
+    }
+}
