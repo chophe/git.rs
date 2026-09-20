@@ -1,7 +1,6 @@
 //! The `git` command-line dispatcher.
 
 use std::cell::Cell;
-use std::io::Write as _;
 use std::rc::Rc;
 
 /// The version reported by `git --version`, tracking the C git version this
