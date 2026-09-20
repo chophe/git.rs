@@ -1,0 +1,4 @@
+# Local cargo aliases for the git.rs Rust workspace (run from `crates/`).
+# `cargo xtask <cmd>` runs the automation binary defined in `xtask/src/main.rs`.
+[alias]
+xtask = "run --package xtask --"
