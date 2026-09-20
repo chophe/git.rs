@@ -45,7 +45,7 @@ fn real(dir: &Path, args: &[&str]) -> (String, i32) {
     (text, out.status.code().unwrap_or(128))
 }
 
-fn ours(dir: &Path, args: &[&str]) -> (String, i32) {
+fn ours(_dir: &Path, args: &[&str]) -> (String, i32) {
     let (ctx, rest) = RepoContext::from_global_args(
         &args.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
     )
