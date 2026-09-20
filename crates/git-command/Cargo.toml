@@ -24,3 +24,5 @@ git-attributes = { path = "../git-attributes" }
 
 [dev-dependencies]
 git-config = { path = "../git-config" }
+git-odb = { path = "../git-odb" }
+git-refs = { path = "../git-refs" }
