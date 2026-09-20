@@ -15,7 +15,6 @@ use crate::checkout_core::{
     rebuild_index, verify_uptodate, write_index,
 };
 use crate::{Command, CommandError, RepoContext};
-use git_index::Index;
 use git_object::ObjectKind;
 use git_odb::Odb;
 
