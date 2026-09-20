@@ -271,3 +271,7 @@ Release/
 
 # graft's local graph cache — regenerable, not committed (run `graft build`).
 /graft/
+
+# Rust workspace (crates/) — compiler backups and OS metadata.
+*.rs.bk
+.DS_Store
