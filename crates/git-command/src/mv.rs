@@ -5,7 +5,6 @@
 //! moved as plain paths (no `.gitmodules` rewriting).
 
 use std::io::Write;
-use std::path::PathBuf;
 
 use crate::checkout_core::{self, read_index_or_empty, write_index};
 use crate::{Command, CommandError, RepoContext};
