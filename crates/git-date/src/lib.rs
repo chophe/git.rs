@@ -545,3 +545,29 @@ mod tests {
         assert_eq!(ts.format_rfc2822(), "Sun, 06 Nov 1994 08:49:37 +0000");
     }
 }
+
+#[cfg(test)]
+mod props {
+    use super::*;
+    use proptest::prelude::*;
+
+    const NOW: Timestamp = Timestamp { secs: 1_700_000_000, offset_min: 0 };
+
+    proptest! {
+        /// `parse` is total over arbitrary strings (never panics).
+        #[test]
+        fn parse_never_panics(s: String) {
+            let _ = parse(&s, NOW);
+        }
+
+        /// The raw `<secs> <±hhmm>` format round-trips exactly.
+        #[test]
+        fn raw_round_trip(secs in -62135596800i64..253402300800i64, offset_min in -720i32..840i32) {
+            let ts = Timestamp::new(secs, offset_min);
+            let raw = ts.format_raw();
+            let back = parse(&raw, NOW).expect("raw output parses");
+            prop_assert_eq!(back.secs, secs);
+            prop_assert_eq!(back.offset_min, offset_min);
+        }
+    }
+}

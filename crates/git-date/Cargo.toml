@@ -5,3 +5,6 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "Date and timestamp parsing/formatting (git-compatible subset)"
+
+[dev-dependencies]
+proptest = "1"
