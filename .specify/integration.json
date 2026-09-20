@@ -2,10 +2,30 @@
   "version": "1.0.7",
   "integration_state_schema": 1,
   "installed_integrations": [
-    "agy"
+    "agy",
+    "opencode",
+    "claude",
+    "goose",
+    "hermes"
   ],
   "integration_settings": {
     "agy": {
+      "script": "sh",
+      "invoke_separator": "-"
+    },
+    "opencode": {
+      "script": "sh",
+      "invoke_separator": "."
+    },
+    "claude": {
+      "script": "sh",
+      "invoke_separator": "-"
+    },
+    "goose": {
+      "script": "sh",
+      "invoke_separator": "."
+    },
+    "hermes": {
       "script": "sh",
       "invoke_separator": "-"
     }
