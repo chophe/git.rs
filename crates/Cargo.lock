@@ -183,6 +183,9 @@ dependencies = [
 [[package]]
 name = "git-date"
 version = "0.1.0"
+dependencies = [
+ "proptest",
+]
 
 [[package]]
 name = "git-diff"
@@ -205,6 +208,7 @@ name = "git-index"
 version = "0.1.0"
 dependencies = [
  "git-hash",
+ "proptest",
 ]
 
 [[package]]
@@ -221,6 +225,7 @@ name = "git-object"
 version = "0.1.0"
 dependencies = [
  "git-hash",
+ "proptest",
 ]
 
 [[package]]
