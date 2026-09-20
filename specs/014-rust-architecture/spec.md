@@ -22,6 +22,16 @@ Observed health: dependency directions are acyclic and point one way (surface �
 
 This spec keeps that architecture and places the missing pieces; it does not redesign what exists.
 
+## Clarifications
+
+### Session 2026-09-20
+
+- Q: What peak-memory bound must bulk streaming paths (hash, pack, delta, walk) meet on oversized fixtures? → A: Match C git memory use (same order of magnitude, no fixed MB cap in spec).
+- Q: How must the credentials boundary prove that secrets never leak into config values, logs, or error messages? → A: Mirror C git credential scope/behavior (no Rust-invented extras).
+- Q: Where must logging, metrics, and tracing signals live so library components stay testable without hidden global I/O? → A: Same as C git (stderr diagnostics + exit codes at the edge; no metrics/tracing beyond C parity).
+- Q: Which exit-code classes must the component-error to exit-code mapping cover for fault-injection drills to verify? → A: C git parity.
+- Q: How must the transport component handle connection failures, negotiation mismatches, and progress reporting? → A: C git parity.
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Add a command without touching unrelated components (Priority: P1)
@@ -146,11 +156,11 @@ Component boundaries (all 21 requested areas placed; existing homes kept):
 - **FR-012 (attributes)**: Ignore/attribute evaluation (ignore stacking, attribute lookup, streaming filter decisions) MUST live in one component consumed by status/add/checkout/diff paths; matching semantics MUST NOT be reimplemented per consumer.
 - **FR-013 (diff)**: The diff component MUST own similarity engines, hunk rendering, rename detection, and binary handling; commands select options and print results — they MUST NOT contain comparison algorithms.
 - **FR-014 (merge)**: The merge component MUST own merge-base computation, line-level merging, and conflict representation; index/ref updates resulting from merges go through the index/refs components, never via direct file writes from merge code.
-- **FR-015 (transport)**: Network and local data-movement (connection handling, pack negotiation, progress) MUST live in a dedicated component that depends on store/language layers and is depended on by fetch/push-class commands only; store components MUST NOT depend on transport.
+- **FR-015 (transport)**: Network and local data-movement (connection handling, pack negotiation, progress) MUST live in a dedicated component that depends on store/language layers and is depended on by fetch/push-class commands only; retry, timeout, failure, and progress behavior MUST match C git on identical remotes and packet streams; store components MUST NOT depend on transport.
 - **FR-016 (protocols)**: Wire encoding (packet lines, capability advertisement, protocol-version negotiation) MUST be isolated from transport flow control so each can be tested with canned byte streams and neither leaks framing details into command logic.
 - **FR-017 (worktree)**: Work-tree materialization (file creation, mode/symlink handling, stat refresh, sparse patterns) MUST live in one component used by checkout/restore/reset/status paths; index entries and work-tree bytes MUST meet only at its interface.
 - **FR-018 (hooks)**: Hook discovery, execution environment, and skip/force policy MUST live in one component; command flows call explicit hook points and MUST behave identically (modulo the hook's own effects) when hooks are absent.
-- **FR-019 (credentials)**: Secret lookup, caching, and redaction MUST live in one component; secrets MUST NOT flow through config values, logs, or error messages, and no other component may implement its own credential prompting.
+- **FR-019 (credentials)**: Secret lookup, caching, and redaction MUST live in one component mirroring C git's credential scope and observable behavior (helper protocol, caching, prompting); secrets MUST NOT flow through config values, logs, or error messages beyond what C git itself exposes, and no other component may implement its own credential prompting.
 - **FR-020 (plumbing commands)**: Plumbing modules MUST compose library components into stable machine-readable behavior, each depending only on the libraries its contract needs; shared parsing/output helpers MUST be explicit modules, not copy-pasted snippets.
 - **FR-021 (porcelain commands)**: Porcelain MUST be built on top of the same library components and plumbing contracts (never on display text of other commands); human formatting MUST be isolated so display changes cannot alter scripted behavior.
 
@@ -158,7 +168,7 @@ Structural rules:
 
 - **FR-022 (acyclic minimal coupling)**: The dependency graph MUST be acyclic with arrows pointing surface → access → language → store → mid → foundation (see FR-001–FR-021 placements); a new edge that creates a cycle or a layer violation MUST fail the dependency check. Each component MUST declare its dependencies; undeclared use MUST fail the build's interface check.
 - **FR-023 (no global mutable state)**: Process environment and working directory MUST be read once at the CLI edge into explicitly passed context values; library code MUST receive what it needs as arguments. Test-only process-global mutation MUST stay confined to test harnesses with serializing guards, never in production paths.
-- **FR-024 (explicit errors)**: Every component MUST expose its own error enum with specific variants (I/O, not-found, corrupt, ambiguous, locked, invalid) convertible to the surfaced exit-code classes without losing layer attribution; untyped catch-all variants MUST NOT be used for new errors.
+- **FR-024 (explicit errors)**: Every component MUST expose its own error enum with specific variants (I/O, not-found, corrupt, ambiguous, locked, invalid) convertible to the surfaced C git exit-code classes (0 success, 1 generic/unknown-command, 129 usage, 128+ fatal/signal behavior per C git as oracle) without losing layer attribution; untyped catch-all variants MUST NOT be used for new errors. Observability follows C git parity: libraries return typed errors only, and human diagnostics/exit codes render at the CLI/surface edge — no metrics/tracing signals beyond what C git emits.
 - **FR-025 (traits with justification)**: New traits MUST be introduced only with a recorded justification — at least two real implementations or a genuine test-double need (the existing per-command dispatch trait is the precedent pattern); single-implementation abstraction speculation MUST be rejected in review.
 - **FR-026 (zero-copy/streaming)**: Parsers MUST offer borrowed views over input bytes where the data is retained by the caller; bulk paths (hash, compress, pack, delta, walk) MUST stream with bounded memory; buffering APIs MUST be labeled as buffering so callers cannot mistake them for streaming.
 - **FR-027 (ownership)**: Handles MUST own their scope: repository handles own paths/config, store handles borrow the repository scope, command invocations own their output sinks and contexts. Cross-component shared mutation MUST go through the owning component's atomic operations (ref transactions, index locks, config writes), never through shared mutable references.
@@ -183,7 +193,7 @@ Structural rules:
 - **SC-001**: Contributors complete routine command ports touching only the new module, dispatch table, shim list, and suite — 90% of ports require zero edits to existing library components.
 - **SC-002**: Every component's tests pass stand-alone in a bare directory with a scrubbed environment; no component's tests require another component's fixtures or a live repository layout.
 - **SC-003**: Fault-injection drills (one fault per layer) attribute correctly 100% of the time: the surfaced error names the failing layer and preserves the exit-code class end to end.
-- **SC-004**: Oversized fixtures (hundred-megabyte blob, deep delta chains, wide trees) process with bounded peak memory on bulk paths while producing byte-identical outputs to standard Git.
+- **SC-004**: Oversized fixtures (hundred-megabyte blob, deep delta chains, wide trees) process with peak memory within the same order of magnitude as C git on identical fixtures (no fixed MB cap in this spec; per-milestone budgets may tighten this at planning time) while producing byte-identical outputs to standard Git.
 - **SC-005**: All 21 requested boundaries resolve to exactly one owning component with zero overlaps and zero gaps, and probe implementations in new slots compile without touching neighbors.
 - **SC-006**: All mechanical gates pass continuously: zero unjustified `unsafe`, zero dependency cycles or layer violations, warning-free MSRV build, clean dependency policy — with every introduced violation caught naming the offending change.
 - **SC-007**: New contributors locate the right component for a bug or feature on first attempt in 80% of trials, measured by routing issues/PRs without reassignment.
