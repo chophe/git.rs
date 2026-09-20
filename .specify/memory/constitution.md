@@ -1,50 +1,97 @@
-# [PROJECT_NAME] Constitution
-<!-- Example: Spec Constitution, TaskFlow Constitution, etc. -->
+<!--
+Sync Impact Report (review scratch — remove before commit):
+- Version change: unversioned template → 1.0.0 (initial ratification)
+- Modified principles: none (no prior ratified content; template placeholders replaced)
+- Added sections: Core Principles I–V; Compatibility Requirements; Development Workflow;
+  Governance — all derived from the ratified project principle plus the repository's
+  already-locked decisions (product spec 002, master spec 014, docs/plan).
+- Removed sections: none (template slots filled, not removed).
+- Follow-up TODOs: none. Open item: constitution-template layers untouched per skill scope.
+-->
+
+# git.rs Constitution
 
 ## Core Principles
 
-### [PRINCIPLE_1_NAME]
-<!-- Example: I. Library-First -->
-[PRINCIPLE_1_DESCRIPTION]
-<!-- Example: Every feature starts as a standalone library; Libraries must be self-contained, independently testable, documented; Clear purpose required - no organizational-only libraries -->
+### I. Behavioral Fidelity (NON-NEGOTIABLE)
 
-### [PRINCIPLE_2_NAME]
-<!-- Example: II. CLI Interface -->
-[PRINCIPLE_2_DESCRIPTION]
-<!-- Example: Every library exposes functionality via CLI; Text in/out protocol: stdin/args → stdout, errors → stderr; Support JSON + human-readable formats -->
+git.rs is NOT a Git-inspired version-control system. It is a Rust reimplementation
+of Git.
 
-### [PRINCIPLE_3_NAME]
-<!-- Example: III. Test-First (NON-NEGOTIABLE) -->
-[PRINCIPLE_3_DESCRIPTION]
-<!-- Example: TDD mandatory: Tests written → User approved → Tests fail → Then implement; Red-Green-Refactor cycle strictly enforced -->
+Whenever there is a choice between inventing a cleaner behavior, designing a more
+convenient API, simplifying a Git format, or changing a Git command's semantics,
+and preserving documented or observed Git behavior, the implementation MUST
+preserve Git behavior unless the project specification explicitly declares a
+compatibility boundary.
 
-### [PRINCIPLE_4_NAME]
-<!-- Example: IV. Integration Testing -->
-[PRINCIPLE_4_DESCRIPTION]
-<!-- Example: Focus areas requiring integration tests: New library contract tests, Contract changes, Inter-service communication, Shared schemas -->
+Git's C implementation MUST NOT be translated mechanically. Git is the behavioral
+specification; Rust is the implementation language.
 
-### [PRINCIPLE_5_NAME]
-<!-- Example: V. Observability, VI. Versioning & Breaking Changes, VII. Simplicity -->
-[PRINCIPLE_5_DESCRIPTION]
-<!-- Example: Text I/O ensures debuggability; Structured logging required; Or: MAJOR.MINOR.BUILD format; Or: Start simple, YAGNI principles -->
+Compatibility is measured against real Git behavior, repository formats, command
+semantics, interoperability, and tests — never by similarity of source code.
 
-## [SECTION_2_NAME]
-<!-- Example: Additional Constraints, Security Requirements, Performance Standards, etc. -->
+### II. Standalone Implementation
 
-[SECTION_2_CONTENT]
-<!-- Example: Technology stack requirements, compliance standards, deployment policies, etc. -->
+The Rust binary MUST never call into C Git, and the C Git binary MUST never be
+linked into the Rust build. The C tree is reference material and test oracle
+only. This rule is not negotiable and is not a temporary state.
 
-## [SECTION_3_NAME]
-<!-- Example: Development Workflow, Review Process, Quality Gates, etc. -->
+### III. Evidence Over Assertion
 
-[SECTION_3_CONTENT]
-<!-- Example: Code review requirements, testing gates, deployment approval process, etc. -->
+The `t/` suite is the oracle: where C source and the suite disagree, the suite
+wins. No compatibility claim stands without demonstration — parity MUST be shown
+by differential suites, crosswise checks, or upstream scripts, or the capability
+MUST be explicitly marked incomplete. Presence of a command in the dispatcher
+never implies parity.
+
+### IV. Explicit Boundaries, Honest Failure
+
+Every known divergence MUST be a logged backlog entry naming its reason and
+affected suites. Uncovered commands and options MUST fail honestly (unknown
+command, usage error, unsupported-capability diagnostic) — silent approximation
+of unimplemented semantics is a defect, more dangerous than rejection.
+
+### V. Rust-Native Internals, Fixed Observables
+
+Crate boundaries, module layout, memory management, concurrency, and error
+plumbing are Rust-native and free to differ from C. They MUST NOT change output
+bytes, exit codes, or on-disk formats. No user-facing option, format, or
+behavior may be invented that Git lacks.
+
+## Compatibility Requirements
+
+Obligation levels from the product specification apply to all work: MUST
+(non-negotiable, machine-verified — exit codes, machine-readable output,
+bidirectional on-disk compatibility, no regression against the committed
+scoreboard baseline, buildable and testable at every commit); SHOULD (expected
+with recorded exceptions — diagnostic wording, human prose, performance within
+the same order of magnitude, environment and configuration handling).
+
+All writes MUST be atomic (temp file plus rename under lock discipline).
+Parsers MUST be total on arbitrary input. Received and incoming state MUST be
+validated before acceptance.
+
+## Development Workflow
+
+Specification before implementation: the master specification is the source of
+truth; subsystem specifications detail behavior within its boundaries; conflicts
+are resolved there first under the fixed priority (repository constraints and
+locked decisions, then Git compatibility, then tests and observed behavior, then
+Rust-native considerations).
+
+Phase gates are machine-checkable: workspace tests green, phase differential
+suites green, no scoreboard regression, coverage at the project threshold. The
+scoreboard baseline updates only alongside intentional behavior change, never to
+mask failure.
 
 ## Governance
-<!-- Example: Constitution supersedes all other practices; Amendments require documentation, approval, migration plan -->
 
-[GOVERNANCE_RULES]
-<!-- Example: All PRs/reviews must verify compliance; Complexity must be justified; Use [GUIDANCE_FILE] for runtime development guidance -->
+This constitution supersedes all other practices. Amendments require
+documentation, a version bump, and a migration note for affected specifications;
+governance-principle removals or redefinitions bump MAJOR, new principles or
+materially expanded guidance bump MINOR, clarifications bump PATCH. All reviews
+MUST verify constitutional compliance. Complexity MUST be justified against
+Principle I: any deviation from Git behavior needs an explicit compatibility
+boundary, not an engineering preference.
 
-**Version**: [CONSTITUTION_VERSION] | **Ratified**: [RATIFICATION_DATE] | **Last Amended**: [LAST_AMENDED_DATE]
-<!-- Example: Version: 2.1.1 | Ratified: 2025-06-13 | Last Amended: 2025-07-16 -->
+**Version**: 1.0.0 | **Ratified**: 2026-09-20 | **Last Amended**: 2026-09-20
