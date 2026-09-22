@@ -140,7 +140,7 @@ impl Command for Add {
             }
         }
 
-        let mut engine = build_engine(&repo);
+        let mut engine = build_engine(&repo, &ctx.cwd);
         let mut walker = Walker {
             root: work_tree.clone(),
             engine: &mut engine,

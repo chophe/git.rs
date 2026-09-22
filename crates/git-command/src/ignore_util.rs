@@ -1,7 +1,7 @@
 //! Shared construction of the worktree ignore engine used by `check-ignore`
 //! and `add` (`.gitignore` files, `.git/info/exclude`, `core.excludesFile`).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use git_attributes::ignore::{parse_gitignore, IgnoreEngine, PatternList};
 use git_core::Repository;
@@ -33,13 +33,13 @@ pub(crate) fn global_excludes(repo: &Repository) -> PatternList {
 }
 
 /// Collect every `.gitignore` file under the work tree (recursively), each
-/// scoped to its directory.
-pub(crate) fn collect_gitignores(repo: &Repository) -> Vec<PatternList> {
+/// scoped to its directory. `cwd` is the invocation directory from the
+/// context (used only for display labels of pattern sources).
+pub(crate) fn collect_gitignores(repo: &Repository, cwd: &Path) -> Vec<PatternList> {
     let work_tree = match &repo.work_tree {
         Some(wt) => wt.clone(),
         None => return Vec::new(),
     };
-    let cwd = std::env::current_dir().unwrap_or_else(|_| work_tree.clone());
     let mut lists = Vec::new();
     let mut todo: Vec<PathBuf> = vec![work_tree.clone()];
     let mut visited = std::collections::HashSet::new();
@@ -66,9 +66,9 @@ pub(crate) fn collect_gitignores(repo: &Repository) -> Vec<PatternList> {
 }
 
 /// Build a fully-populated ignore engine for the repository's worktree.
-pub(crate) fn build_engine(repo: &Repository) -> IgnoreEngine {
+pub(crate) fn build_engine(repo: &Repository, cwd: &Path) -> IgnoreEngine {
     let mut engine = IgnoreEngine::new();
-    for pl in collect_gitignores(repo) {
+    for pl in collect_gitignores(repo, cwd) {
         engine.add_dir_patterns(pl);
     }
     engine.add_dir_patterns(info_exclude(repo));

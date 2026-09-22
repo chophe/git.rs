@@ -162,7 +162,7 @@ impl Command for Clean {
         let mut engine = if rm_ignored {
             git_attributes::ignore::IgnoreEngine::new()
         } else {
-            build_engine(&repo)
+            build_engine(&repo, &ctx.cwd)
         };
         if !excludes.is_empty() {
             let joined = excludes.join("\n");

@@ -185,6 +185,7 @@ impl Command for Status {
             &index,
             a.ignored,
             a.untracked != UntrackedMode::All,
+            &ctx.cwd,
         );
         let has_untracked = !untracked.is_empty();
         let untracked = if a.untracked == UntrackedMode::No {

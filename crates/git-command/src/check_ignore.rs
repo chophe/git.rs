@@ -90,7 +90,7 @@ impl Command for CheckIgnore {
         }
 
         // Load standard excludes.
-        let mut engine = build_engine(&repo);
+        let mut engine = build_engine(&repo, &ctx.cwd);
 
         let num_ignored = std::cell::Cell::new(0usize);
 

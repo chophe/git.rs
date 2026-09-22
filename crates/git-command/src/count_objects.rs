@@ -20,14 +20,11 @@ fn on_disk_bytes(path: &Path) -> u64 {
     }
 }
 
-/// Render a path the way C git does: relative to the cwd when it lies under
-/// it (C git constructs object paths from the discovered `.git` location).
-fn display_relative(path: &Path) -> String {
-    let cwd = match std::env::current_dir() {
-        Ok(c) => c,
-        Err(_) => return path.display().to_string(),
-    };
-    match path.strip_prefix(&cwd) {
+/// Render a path the way C git does: relative to the invocation directory
+/// (from the context, honoring `-C`) when it lies under it (C git constructs
+/// object paths from the discovered `.git` location).
+fn display_relative(path: &Path, cwd: &Path) -> String {
+    match path.strip_prefix(cwd) {
         Ok(rel) => rel.display().to_string(),
         Err(_) => path.display().to_string(),
     }
@@ -116,7 +113,7 @@ impl Command for CountObjects {
                 let is_file = path.is_file();
                 if !oid_ok || !is_file {
                     if verbose {
-                        eprintln!("warning: garbage found: {}", display_relative(&path));
+                        eprintln!("warning: garbage found: {}", display_relative(&path, &ctx.cwd));
                         garbage += 1;
                         size_garbage += std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
                     }
@@ -165,7 +162,7 @@ impl Command for CountObjects {
                     ["idx", "rev", "pack", "bitmap", "keep", "promisor", "mtimes"];
                 let ext = p.extension().and_then(|x| x.to_str());
                 if !KNOWN.contains(&ext.unwrap_or("")) {
-                    eprintln!("warning: garbage found: {}", display_relative(&p));
+                    eprintln!("warning: garbage found: {}", display_relative(&p, &ctx.cwd));
                     garbage += 1;
                     size_garbage += std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
                     continue;
@@ -223,7 +220,7 @@ impl Command for CountObjects {
                 };
                 for (base, p, _b) in &grouped[i..j] {
                     let _ = base;
-                    eprintln!("warning: {desc}: {}", display_relative(p));
+                    eprintln!("warning: {desc}: {}", display_relative(p, &ctx.cwd));
                     garbage += 1;
                     size_garbage += std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
                 }

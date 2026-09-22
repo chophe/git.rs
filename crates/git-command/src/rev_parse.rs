@@ -54,13 +54,15 @@ impl Command for RevParse {
                     default_arg = Some(s["--default=".len()..].to_string());
                 }
                 "--git-dir" => {
-                    let shown =
-                        repo.git_dir_specified.clone().unwrap_or_else(|| display_path(&repo.git_dir, false));
+                    let shown = repo
+                        .git_dir_specified
+                        .clone()
+                        .unwrap_or_else(|| display_path(&repo.git_dir, &ctx.cwd, false));
                     writeln!(out, "{}", shown.display())
                         .map_err(|e| CommandError::fatal(e.to_string()))?;
                 }
                 "--git-common-dir" => {
-                    writeln!(out, "{}", display_path(&repo.common_dir, true).display())
+                    writeln!(out, "{}", display_path(&repo.common_dir, &ctx.cwd, true).display())
                         .map_err(|e| CommandError::fatal(e.to_string()))?;
                 }
                 "--show-toplevel" => {
@@ -94,7 +96,9 @@ impl Command for RevParse {
                         .map_err(|e| CommandError::fatal(e.to_string()))?;
                 }
                 "--show-prefix" => {
-                    let prefix = relative_from(&std::env::current_dir().unwrap_or_default(), &repo.work_tree.clone().unwrap_or_default())
+                    // Relative to the invocation directory carried in the
+                    // context (honors `-C`), never the process-global cwd.
+                    let prefix = relative_from(&ctx.cwd, &repo.work_tree.clone().unwrap_or_default())
                         .map(|p| {
                             let s = p.display().to_string();
                             if s.is_empty() { s } else { format!("{s}/") }
@@ -103,7 +107,7 @@ impl Command for RevParse {
                     writeln!(out, "{prefix}").map_err(|e| CommandError::fatal(e.to_string()))?;
                 }
                 "--show-cdup" => {
-                    let cdup = relative_from(&std::env::current_dir().unwrap_or_default(), &repo.work_tree.clone().unwrap_or_default())
+                    let cdup = relative_from(&ctx.cwd, &repo.work_tree.clone().unwrap_or_default())
                         .map(|p| {
                             let depth = p.components().count();
                             "../".repeat(depth)
@@ -364,20 +368,17 @@ fn sq_quote_arg(out: &mut String, arg: &str) {
     out.push(0x27 as char);
 }
 
-/// How C git renders `--git-dir`/`--git-common-dir`: relative to the current
-/// directory when the path sits under the cwd, otherwise absolute.
-/// `allow_dotdot` permits a relative result that escapes the cwd (matching
-/// C git's `--git-common-dir` behavior from a subdirectory).
-fn display_path(p: &std::path::Path, allow_dotdot: bool) -> std::path::PathBuf {
-    let cwd = match std::env::current_dir() {
-        Ok(c) => c,
-        Err(_) => return p.to_path_buf(),
-    };
-    if let Ok(rel) = p.strip_prefix(&cwd) {
+/// How C git renders `--git-dir`/`--git-common-dir`: relative to the
+/// invocation directory (from the context, honoring `-C`) when the path sits
+/// under it, otherwise absolute. `allow_dotdot` permits a relative result
+/// that escapes the cwd (matching C git's `--git-common-dir` behavior from a
+/// subdirectory).
+fn display_path(p: &std::path::Path, cwd: &std::path::Path, allow_dotdot: bool) -> std::path::PathBuf {
+    if let Ok(rel) = p.strip_prefix(cwd) {
         return rel.to_path_buf();
     }
     if allow_dotdot {
-        if let Some(rel) = relative_from(p, &cwd) {
+        if let Some(rel) = relative_from(p, cwd) {
             return rel;
         }
     }

@@ -73,13 +73,14 @@ pub(crate) fn untracked_and_ignored(
     index: &Index,
     include_ignored: bool,
     collapse_untracked: bool,
+    cwd: &Path,
 ) -> (Vec<String>, Vec<String>) {
     let work_tree = match repo.work_tree.clone() {
         Some(w) => w,
         None => return (Vec::new(), Vec::new()),
     };
     let tracked: HashSet<String> = index.entries.iter().map(|e| e.name.clone()).collect();
-    let mut engine = crate::ignore_util::build_engine(repo);
+    let mut engine = crate::ignore_util::build_engine(repo, cwd);
     let mut untracked = Vec::new();
     let mut ignored = Vec::new();
     walk(
