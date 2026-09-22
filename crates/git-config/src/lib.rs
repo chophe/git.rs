@@ -40,6 +40,9 @@ pub enum ConfigError {
     Io(String),
     IncludeCycle(PathBuf),
     UnterminatedQuote,
+    /// A malformed line (e.g. a section header without a closing bracket),
+    /// mirroring C git's `fatal: bad config line N [in file F]`.
+    BadLine { line: usize, file: Option<PathBuf> },
 }
 
 impl fmt::Display for ConfigError {
@@ -48,11 +51,29 @@ impl fmt::Display for ConfigError {
             ConfigError::Io(e) => write!(f, "could not read config: {e}"),
             ConfigError::IncludeCycle(p) => write!(f, "include cycle detected: {}", p.display()),
             ConfigError::UnterminatedQuote => write!(f, "unterminated quote in config value"),
+            ConfigError::BadLine { line, file } => {
+                write!(f, "bad config line {line}")?;
+                if let Some(p) = file {
+                    write!(f, " in file {}", p.display())?;
+                }
+                Ok(())
+            }
         }
     }
 }
 
 impl Error for ConfigError {}
+
+impl ConfigError {
+    /// Attach the source file to a [`ConfigError::BadLine`] that was parsed
+    /// without origin context (e.g. repository config via [`ConfigSet::parse`]).
+    pub fn with_file(self, file: PathBuf) -> ConfigError {
+        match self {
+            ConfigError::BadLine { line, file: None } => ConfigError::BadLine { line, file: Some(file) },
+            other => other,
+        }
+    }
+}
 
 /// An ordered set of configuration entries (last occurrence wins on lookup).
 #[derive(Debug, Clone, Default)]
@@ -105,7 +126,8 @@ impl ConfigSet {
         let mut continuation = false;
         let mut includes = Vec::new();
 
-        for line in text.lines() {
+        for (n, line) in text.lines().enumerate() {
+            let line_no = n + 1;
             let line = line.trim_end_matches('\r');
 
             // A value continues onto the next line only when the previous
@@ -134,10 +156,13 @@ impl ConfigSet {
                 continue;
             }
             if trimmed.starts_with('[') {
-                // Section header; skip lines without a closing bracket.
+                // Section header; a missing closing bracket is fatal, like C
+                // git (`fatal: bad config line N`), not silently skipped.
                 let end = match trimmed.find(']') {
                     Some(e) => e,
-                    None => continue,
+                    None => {
+                        return Err(ConfigError::BadLine { line: line_no, file: origin.clone() });
+                    }
                 };
                 let inner = trimmed[1..end].trim();
                 let (s, sub) = split_section(inner);
@@ -524,6 +549,19 @@ mod tests {
         assert!(matches!(err, ConfigError::IncludeCycle(_)));
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn unclosed_section_header_is_fatal_with_line_number() {
+        // Mirrors C git: `fatal: bad config line 2 in file ...`.
+        let err = ConfigSet::parse(b"[core]\n\tfilemode = true\n[[[oops\n").unwrap_err();
+        assert!(
+            matches!(err, ConfigError::BadLine { line: 3, file: None }),
+            "unexpected error: {err:?}"
+        );
+        assert_eq!(format!("{err}"), "bad config line 3");
+        let with_file = err.with_file(std::path::PathBuf::from(".git/config"));
+        assert_eq!(format!("{with_file}"), "bad config line 3 in file .git/config");
     }
 }
 

@@ -141,8 +141,9 @@ impl Repository {
         };
         let common_dir = canonicalize_preserve(&common_dir);
 
-        let config = match std::fs::read(common_dir.join("config")) {
-            Ok(data) => ConfigSet::parse(&data)?,
+        let config_path = common_dir.join("config");
+        let config = match std::fs::read(&config_path) {
+            Ok(data) => ConfigSet::parse(&data).map_err(|e| e.with_file(config_path))?,
             Err(_) => ConfigSet::new(),
         };
 
