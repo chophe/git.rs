@@ -1,0 +1,11 @@
+[package]
+name = "git-transport"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Data movement: connection handling, pack negotiation, progress (C-git parity)"
+
+[dependencies]
+git-hash = { path = "../git-hash" }
+git-odb = { path = "../git-odb" }
