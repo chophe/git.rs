@@ -6,9 +6,23 @@
 //!   gen-fixtures   (re)generate the golden fixtures under `tests/fixtures`
 //!   scoreboard     run the differential suites and update `scoreboard.json`,
 //!                  failing on regression against the committed baseline
+//!   gates          run the structural gates: depcheck + safety + placement
+//!   depcheck       dependency-structure gate (cycles, layer violations)
+//!   safety         zero-unjustified-`unsafe` gate
+//!   placement      21-boundary ownership drill
+//!   drills         fault-injection drills (exit classes + attribution)
+//!   oversized      oversized-fixture streaming check (SC-004)
+//!   isolation      per-component tests in a bare dir with scrubbed env (SC-002)
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+mod depcheck;
+mod drills;
+mod fixtures;
+mod isolation;
+mod placement;
+mod safety;
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -34,6 +48,13 @@ fn main() {
         "differential" => differential(),
         "gen-fixtures" => gen_fixtures(),
         "scoreboard" => scoreboard(),
+        "gates" => gates(),
+        "depcheck" => depcheck::run(),
+        "safety" => safety::run(),
+        "placement" => placement::run(),
+        "drills" => drills::run(),
+        "oversized" => fixtures::run(),
+        "isolation" => isolation::run(),
         "help" | "-h" | "--help" => {
             print_help();
             true
@@ -56,8 +77,25 @@ fn print_help() {
          test           run the full workspace test suite\n  \
          differential   run crosswise suites against system git\n  \
          gen-fixtures   regenerate tests/fixtures\n  \
-         scoreboard     run differential suites and update scoreboard.json"
+         scoreboard     run differential suites and update scoreboard.json\n  \
+         gates          structural gates: depcheck + safety + placement\n  \
+         depcheck       dependency-structure gate\n  \
+         safety         zero-unjustified-unsafe gate\n  \
+         placement      21-boundary ownership drill\n  \
+         drills         fault-injection drills\n  \
+         oversized      oversized-fixture streaming check\n  \
+         isolation      component tests, bare dir + scrubbed env"
     );
+}
+
+/// The structural gates: dependency structure, safety, boundary placement.
+fn gates() -> bool {
+    let mut ok = true;
+    ok &= depcheck::run();
+    ok &= safety::run();
+    ok &= placement::run();
+    println!("gates: {}", if ok { "PASS" } else { "FAIL" });
+    ok
 }
 
 /// The crosswise suites, each keyed by its cargo invocation.
