@@ -1,0 +1,11 @@
+[package]
+name = "git-worktree"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Work-tree materialization: file creation, modes, symlinks, stat refresh"
+
+[dependencies]
+git-core = { path = "../git-core" }
+git-index = { path = "../git-index" }
