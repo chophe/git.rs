@@ -93,6 +93,7 @@ fn matches_any(haystack: &str, needles: &[String], ignore_case: bool) -> bool {
 /// Walk the commits reachable from `tips`, excluding anything reachable
 /// from `hidden`, applying the filters and ordering in `opts`.
 /// Returns the oids in output order.
+/// Buffering: collects the full reachable oid set before returning.
 pub fn walk_commits(
     loader: &mut dyn FnMut(&Oid) -> Option<Commit>,
     tips: &[Oid],

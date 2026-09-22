@@ -44,6 +44,7 @@ impl<'a> RevWalk<'a> {
 
     /// Walk reachable commits from `tips`, returning their oids in insertion
     /// order (each commit visited once).
+    /// Buffering: collects the full reachable oid set before returning.
     pub fn walk(&mut self, tips: &[Oid]) -> Vec<Oid> {
         let mut seen: HashSet<Oid> = HashSet::new();
         let mut queue: VecDeque<Oid> = VecDeque::new();
