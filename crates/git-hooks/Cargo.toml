@@ -1,0 +1,10 @@
+[package]
+name = "git-hooks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Hook discovery, execution environment, and skip/force policy"
+
+[dependencies]
+git-core = { path = "../git-core" }
