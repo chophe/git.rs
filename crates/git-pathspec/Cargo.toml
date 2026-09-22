@@ -1,0 +1,13 @@
+[package]
+name = "git-pathspec"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Path filtering: magic, globs, exclusions, NUL-separated input (sole glob authority)"
+
+[dependencies]
+git-core = { path = "../git-core" }
+
+[dev-dependencies]
+proptest = "1"
