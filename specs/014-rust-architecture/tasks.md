@@ -18,10 +18,10 @@
 
 **Purpose**: Confirm green baseline before any structural work
 
-- [ ] T001 Verify clean workspace build with `cargo build --workspace` in `crates/` and record output in task log
-- [ ] T002 [P] Verify baseline test suite with `cargo test --workspace` in `crates/` and record pre-existing failures (if any) before structural changes
-- [ ] T003 [P] Verify warning-free MSRV build per `crates/Cargo.toml` (`rust-version = "1.74"`, edition 2021) and record toolchain output
-- [ ] T004 Confirm scoreboard baseline is clean (`git status` shows no `crates/scoreboard.json` diff) and `cargo xtask scoreboard` passes in `crates/`
+- [X] T001 Verify clean workspace build with `cargo build --workspace` in `crates/` and record output in task log
+- [X] T002 [P] Verify baseline test suite with `cargo test --workspace` in `crates/` and record pre-existing failures (if any) before structural changes
+- [X] T003 [P] Verify warning-free MSRV build per `crates/Cargo.toml` (`rust-version = "1.74"`, edition 2021) and record toolchain output
+- [X] T004 Confirm scoreboard baseline is clean (`git status` shows no `crates/scoreboard.json` diff) and `cargo xtask scoreboard` passes in `crates/`
 
 ---
 
@@ -31,12 +31,12 @@
 
 **⚠️ CRITICAL**: No user story work can begin until this phase is complete
 
-- [ ] T005 Implement dependency-check gate module in `crates/xtask/src/depcheck.rs` enforcing `specs/014-rust-architecture/contracts/dependency-rules.md` (cycle + layer-violation detection, names offending change)
-- [ ] T006 Implement safety-gate scan module in `crates/xtask/src/safety.rs` enforcing zero unjustified `unsafe` in first-party code under `crates/` (excludes `crates/target/`, allows documented regex-literal matches)
-- [ ] T007 [P] Implement fault-injection drill harness in `crates/xtask/src/drills.rs` covering one fault per layer (bad object bytes, missing ref, corrupt index, bad config) asserting layer attribution + exit-code class per `specs/014-rust-architecture/contracts/error-contract.md`
-- [ ] T008 [P] Implement oversized-fixture generator in `crates/xtask/src/fixtures.rs` (hundred-MB blob, deep delta chain, wide tree) with peak-RSS comparison against system C git per `specs/014-rust-architecture/research.md` R-04
-- [ ] T009 [P] Implement placement-probe harness in `crates/xtask/src/placement.rs` asserting each of the 21 boundaries in `specs/014-rust-architecture/contracts/placement.md` resolves to exactly one owner with zero overlaps/gaps
-- [ ] T010 Wire all gates into a single `cargo xtask gates` entry point in `crates/xtask/src/main.rs` (depends on T005–T009)
+- [X] T005 Implement dependency-check gate module in `crates/xtask/src/depcheck.rs` enforcing `specs/014-rust-architecture/contracts/dependency-rules.md` (cycle + layer-violation detection, names offending change)
+- [X] T006 Implement safety-gate scan module in `crates/xtask/src/safety.rs` enforcing zero unjustified `unsafe` in first-party code under `crates/` (excludes `crates/target/`, allows documented regex-literal matches)
+- [X] T007 [P] Implement fault-injection drill harness in `crates/xtask/src/drills.rs` covering one fault per layer (bad object bytes, missing ref, corrupt index, bad config) asserting layer attribution + exit-code class per `specs/014-rust-architecture/contracts/error-contract.md`
+- [X] T008 [P] Implement oversized-fixture generator in `crates/xtask/src/fixtures.rs` (hundred-MB blob, deep delta chain, wide tree) with peak-RSS comparison against system C git per `specs/014-rust-architecture/research.md` R-04
+- [X] T009 [P] Implement placement-probe harness in `crates/xtask/src/placement.rs` asserting each of the 21 boundaries in `specs/014-rust-architecture/contracts/placement.md` resolves to exactly one owner with zero overlaps/gaps
+- [X] T010 Wire all gates into a single `cargo xtask gates` entry point in `crates/xtask/src/main.rs` (depends on T005–T009)
 
 **Checkpoint**: Foundation ready — `cargo xtask gates` runs green on the untouched tree; user story work can now begin in parallel
 
@@ -48,9 +48,9 @@
 
 **Independent Test**: Add a probe command depending on a single library; change set touches only the new module, dispatch table, shim list, and suite; dependency check reports exactly one new edge set and zero new library-to-library edges
 
-- [ ] T011 [P] [US1] Write probe-command contract test in `crates/git-command/tests/probe_command.rs` asserting a new command compiles against existing store/ref interfaces with zero changes to those components
-- [ ] T012 [US1] Run the probe-command drill end to end (scaffold probe in `crates/git-command/src/probe_drill.rs`, dispatch entry in `crates/git-command/src/lib.rs`, shim entry in `scripts/shim-git`) and assert change-set scope plus single new edge set via `cargo xtask gates` (depends on T010, T011), then remove the probe
-- [ ] T013 [US1] Add plumbing-output stability check in `crates/git-command/tests/plumbing_stability.rs` proving a display-text change cannot alter machine-readable output (porcelain/plumbing split edge case)
+- [X] T011 [P] [US1] Write probe-command contract test in `crates/git-command/tests/probe_command.rs` asserting a new command compiles against existing store/ref interfaces with zero changes to those components
+- [X] T012 [US1] Run the probe-command drill end to end (scaffold probe in `crates/git-command/src/probe_drill.rs`, dispatch entry in `crates/git-command/src/lib.rs`, shim entry in `scripts/shim-git`) and assert change-set scope plus single new edge set via `cargo xtask gates` (depends on T010, T011), then remove the probe
+- [X] T013 [US1] Add plumbing-output stability check in `crates/git-command/tests/plumbing_stability.rs` proving a display-text change cannot alter machine-readable output (porcelain/plumbing split edge case)
 
 **Checkpoint**: User Story 1 fully functional and testable independently — command throughput no longer risks whole-workspace regressions
 
@@ -62,10 +62,10 @@
 
 **Independent Test**: Run each foundation/mid/store component's tests with no fixture repos and no env vars; arbitrary-byte inputs hold documented properties without consulting other components
 
-- [ ] T014 [P] [US2] Implement bare-dir/scrubbed-env isolation runner in `crates/xtask/src/isolation.rs` executing each component's test target without repository fixtures or environment dependence (SC-002 gate)
-- [ ] T015 [P] [US2] Add missing no-panic/round-trip proptest suites for parsers/serializers in `crates/git-hash/`, `crates/git-object/`, and `crates/git-varint/` (one suite per crate, arbitrary-byte inputs)
-- [ ] T016 [P] [US2] Add missing no-panic/round-trip proptest suites for parsers/serializers in `crates/git-index/`, `crates/git-config/`, and `crates/git-date/` (one suite per crate, arbitrary-byte inputs)
-- [ ] T017 [US2] Audit component tests under `crates/*/tests/` for shell-outs and cross-component fixtures; rewrite violations to plain-value inputs per `specs/014-rust-architecture/research.md` R-06 (depends on T014)
+- [X] T014 [P] [US2] Implement bare-dir/scrubbed-env isolation runner in `crates/xtask/src/isolation.rs` executing each component's test target without repository fixtures or environment dependence (SC-002 gate)
+- [X] T015 [P] [US2] Add missing no-panic/round-trip proptest suites for parsers/serializers in `crates/git-hash/`, `crates/git-object/`, and `crates/git-varint/` (one suite per crate, arbitrary-byte inputs)
+- [X] T016 [P] [US2] Add missing no-panic/round-trip proptest suites for parsers/serializers in `crates/git-index/`, `crates/git-config/`, and `crates/git-date/` (one suite per crate, arbitrary-byte inputs)
+- [X] T017 [US2] Audit component tests under `crates/*/tests/` for shell-outs and cross-component fixtures; rewrite violations to plain-value inputs per `specs/014-rust-architecture/research.md` R-06 (depends on T014)
 
 **Checkpoint**: User Stories 1 AND 2 both work independently — failures are local to one component
 
@@ -77,9 +77,9 @@
 
 **Independent Test**: Inject one fault per layer and assert the surfaced error names the layer and cause with exit code matching the declared class; repository context reproducible by passing the same values in tests
 
-- [ ] T018 [P] [US3] Audit per-component error enums across `crates/*/src/*.rs` against `specs/014-rust-architecture/contracts/error-contract.md` (flat specific variants, no `Other`/`Misc` catch-alls for new errors) and fix violations
-- [ ] T019 [US3] Execute fault-injection drills via `crates/xtask/src/drills.rs` and record 100% layer-attribution results with exit classes 0/1/129/128+ preserved (depends on T007, T018)
-- [ ] T020 [US3] Audit library code under `crates/*/src/` for process-global reads (`std::env`, `set_current_dir`, cwd) past the CLI edge; relocate findings to explicitly passed `RepoContext` values originating in `crates/git-cli/` (production paths only; test harnesses keep serializing guards)
+- [X] T018 [P] [US3] Audit per-component error enums across `crates/*/src/*.rs` against `specs/014-rust-architecture/contracts/error-contract.md` (flat specific variants, no `Other`/`Misc` catch-alls for new errors) and fix violations
+- [X] T019 [US3] Execute fault-injection drills via `crates/xtask/src/drills.rs` and record 100% layer-attribution results with exit classes 0/1/129/128+ preserved (depends on T007, T018)
+- [X] T020 [US3] Audit library code under `crates/*/src/` for process-global reads (`std::env`, `set_current_dir`, cwd) past the CLI edge; relocate findings to explicitly passed `RepoContext` values originating in `crates/git-cli/` (production paths only; test harnesses keep serializing guards)
 
 **Checkpoint**: User Stories 1–3 work independently — every bug attributes to exactly one layer
 
@@ -91,9 +91,9 @@
 
 **Independent Test**: Hundred-MB blob hash/store and deep-pack resolution show bounded peak memory with byte-identical outputs to standard Git
 
-- [ ] T021 [US4] Scaffold `crates/git-compress/Cargo.toml` + `crates/git-compress/src/lib.rs` as the sole zlib/deflate boundary (streaming encode/decode with size caps over the single vetted `flate2` provider) and register the member in `crates/Cargo.toml`
-- [ ] T022 [US4] Migrate loose/pack compression call sites in `crates/git-odb/src/` to the `git-compress` facade; verify `flate2` appears in exactly one workspace `Cargo.toml` (`crates/git-compress/Cargo.toml`) (depends on T021)
-- [ ] T023 [P] [US4] Audit stream-shaped APIs in `crates/git-odb/src/`, `crates/git-hash/src/`, and `crates/git-revision/src/` for hidden whole-input buffering; label buffering APIs as buffering per FR-026
+- [X] T021 [US4] Scaffold `crates/git-compress/Cargo.toml` + `crates/git-compress/src/lib.rs` as the sole zlib/deflate boundary (streaming encode/decode with size caps over the single vetted `flate2` provider) and register the member in `crates/Cargo.toml`
+- [X] T022 [US4] Migrate loose/pack compression call sites in `crates/git-odb/src/` to the `git-compress` facade; verify `flate2` appears in exactly one workspace `Cargo.toml` (`crates/git-compress/Cargo.toml`) (depends on T021)
+- [X] T023 [P] [US4] Audit stream-shaped APIs in `crates/git-odb/src/`, `crates/git-hash/src/`, and `crates/git-revision/src/` for hidden whole-input buffering; label buffering APIs as buffering per FR-026
 - [ ] T024 [US4] Run oversized-fixture validation via `crates/xtask/src/fixtures.rs` (byte-identical outputs + memory parity vs C git) and record results (depends on T008, T022, T023)
 
 **Checkpoint**: Bulk paths stream structurally — real repositories cannot OOM a copy-per-layer design
