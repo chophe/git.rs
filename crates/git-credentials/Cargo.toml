@@ -1,0 +1,13 @@
+[package]
+name = "git-credentials"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Secret lookup, caching, prompting, and redaction (C-git helper scope)"
+
+[dependencies]
+git-core = { path = "../git-core" }
+
+[dev-dependencies]
+proptest = "1"
