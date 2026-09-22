@@ -12,9 +12,7 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use flate2::read::ZlibDecoder;
-use flate2::write::ZlibEncoder;
-use flate2::Compression;
+use git_compress::Decoder;
 
 use git_core::Repository;
 use git_hash::{HashAlgorithm, Oid};
@@ -224,6 +222,8 @@ impl LooseStore {
     }
 
     /// Inflate and return the raw serialized bytes of a loose object.
+    /// Buffering: materializes the single object (bounded by its size);
+    /// bulk callers needing bounded memory must page via object sizes first.
     fn read_raw(&self, oid: &Oid) -> Result<Vec<u8>, OdbError> {
         let path = self.oid_path(oid);
         let file = std::fs::File::open(&path)
@@ -234,7 +234,7 @@ impl LooseStore {
                     .ok_or(OdbError::NotFound)
             })
             .map_err(|_| OdbError::NotFound)?;
-        let mut decoder = ZlibDecoder::new(file);
+        let mut decoder = Decoder::new(file);
         let mut out = Vec::new();
         decoder
             .read_to_end(&mut out)
@@ -245,18 +245,13 @@ impl LooseStore {
 
 /// Deflate `data` with zlib framing (matching git's loose-object compression).
 fn compress(data: &[u8]) -> Vec<u8> {
-    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
-    encoder.write_all(data).expect("compression failed");
-    encoder.finish().expect("compression failed")
+    git_compress::encode_all(data)
 }
 
 /// Inflate zlib-framed data (helper for tests).
 #[allow(dead_code)]
 fn decompress(data: &[u8]) -> Vec<u8> {
-    let mut decoder = ZlibDecoder::new(data);
-    let mut out = Vec::new();
-    decoder.read_to_end(&mut out).expect("decompression failed");
-    out
+    git_compress::decode_all(data).expect("decompression failed")
 }
 
 #[cfg(test)]

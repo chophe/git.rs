@@ -16,7 +16,7 @@ pub use write::{write_idx, write_pack, write_pack_opts, PackObject, PackOptions}
 use std::error::Error;
 use std::fmt;
 
-use flate2::{Decompress, FlushDecompress, Status};
+use git_compress::{CompressError, InflateFlush, InflateStatus, Inflater};
 use git_core::Repository;
 use git_hash::{HashAlgorithm, Oid};
 use git_object::Object;
@@ -64,11 +64,26 @@ impl From<PackError> for OdbError {
     }
 }
 
+/// Map a compression-boundary failure onto pack errors, preserving the
+/// observable diagnostics: corrupt streams stay I/O-class, while the output
+/// cap trips the same "larger than declared size" corruption report.
+fn map_inflate_error(e: CompressError, expected: usize) -> PackError {
+    match e {
+        CompressError::TooLarge { .. } => {
+            PackError::Corrupt(format!("object larger than declared size {expected}"))
+        }
+        other => PackError::Io(other.to_string()),
+    }
+}
+
 /// Inflate a single zlib stream, producing exactly `expected` output bytes.
 ///
 /// Returns the decoded bytes and the number of compressed bytes consumed.
+/// Streams through the compression boundary ([`Inflater`]) without
+/// materializing the whole pack; the output cap doubles as the oversize
+/// guard (mapped to the same "larger than declared size" diagnostic).
 fn inflate_exact(input: &[u8], expected: usize) -> Result<(Vec<u8>, usize), PackError> {
-    let mut d = Decompress::new(true); // zlib framing
+    let mut d = Inflater::new_zlib(expected.saturating_add(8) as u64); // zlib framing
     let mut out = vec![0u8; expected.saturating_add(8)];
     let mut in_pos = 0usize;
     let mut out_pos = 0usize;
@@ -77,33 +92,30 @@ fn inflate_exact(input: &[u8], expected: usize) -> Result<(Vec<u8>, usize), Pack
         if out_pos >= expected {
             // Output target reached; keep feeding until StreamEnd so we learn
             // the exact compressed length.
-            let before_in = d.total_in();
             let mut scratch = [0u8; 8];
-            let s = d
-                .decompress(&input[in_pos..], &mut scratch, FlushDecompress::None)
-                .map_err(|e| PackError::Io(e.to_string()))?;
-            in_pos += (d.total_in() - before_in) as usize;
-            if s == Status::StreamEnd {
+            let (used, _, s) = d
+                .decompress(&input[in_pos..], &mut scratch, InflateFlush::None)
+                .map_err(|e| map_inflate_error(e, expected))?;
+            in_pos += used;
+            if s == InflateStatus::StreamEnd {
                 break;
             }
-            if s == Status::BufError && in_pos >= input.len() {
+            if s == InflateStatus::BufError && in_pos >= input.len() {
                 return Err(PackError::Truncated);
             }
             continue;
         }
 
-        let before_in = d.total_in();
-        let before_out = d.total_out();
-        let s = d
-            .decompress(&input[in_pos..], &mut out[out_pos..], FlushDecompress::None)
-            .map_err(|e| PackError::Io(e.to_string()))?;
-        in_pos += (d.total_in() - before_in) as usize;
-        out_pos += (d.total_out() - before_out) as usize;
+        let (used, made, s) = d
+            .decompress(&input[in_pos..], &mut out[out_pos..], InflateFlush::None)
+            .map_err(|e| map_inflate_error(e, expected))?;
+        in_pos += used;
+        out_pos += made;
 
-        if s == Status::StreamEnd {
+        if s == InflateStatus::StreamEnd {
             break;
         }
-        if s == Status::BufError && in_pos >= input.len() {
+        if s == InflateStatus::BufError && in_pos >= input.len() {
             return Err(PackError::Truncated);
         }
         if out_pos > expected {

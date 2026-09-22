@@ -8,13 +8,11 @@
 //! (`--no-delta-base-offset`). Objects with no beneficial delta are stored
 //! whole. The resulting packs verify with C git (`verify-pack`, `fsck`).
 
-use std::io::Write;
 
 use super::crc32::crc32;
 use super::delta::{create_delta, DeltaIndex};
 use super::PackError;
-use flate2::write::ZlibEncoder;
-use flate2::Compression;
+use git_compress::encode_all_level;
 use git_hash::{HashAlgorithm, Oid};
 use git_object::{Object, ObjectKind};
 
@@ -54,10 +52,8 @@ fn encode_entry_header(type_code: u8, size: u64, out: &mut Vec<u8>) {
     }
 }
 
-fn deflate_level(data: &[u8], level: Compression) -> Vec<u8> {
-    let mut e = ZlibEncoder::new(Vec::new(), level);
-    e.write_all(data).expect("deflate");
-    e.finish().expect("deflate")
+fn deflate_level(data: &[u8], level: u32) -> Vec<u8> {
+    encode_all_level(data, level)
 }
 
 /// Options controlling delta selection when writing a pack.
@@ -186,7 +182,7 @@ pub fn write_pack_opts(
     });
 
     let level = opts.compression.min(9);
-    let compression = Compression::new(level);
+    let compression = level;
 
     // Delta selection: for each object, try up to `window` same-type
     // predecessors and keep the smallest delta that beats storing whole.
