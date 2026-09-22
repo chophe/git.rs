@@ -1,0 +1,13 @@
+[package]
+name = "git-compress"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Single zlib/deflate boundary for the workspace (sole flate2 owner)"
+
+[dependencies]
+flate2 = "1"
+
+[dev-dependencies]
+proptest = "1"
