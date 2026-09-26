@@ -51,18 +51,48 @@
 
 - [ ] **TRAN-01**: User clones and inspects locally via file/local transport (`clone`/`fetch`/`push`/`pull` file-local plus `ls-remote`, no sockets)
 
+### Integrity Full
+
+- [ ] **INTG-01**: User trusts repo integrity via full `fsck` (`--strict`, `--connectivity-only`, `--no-dangling`, `--full`, `--lost-found`, message catalog) (gate: `t/t1450`)
+
+### Depth Parity
+
+- [ ] **DEPTH-01**: Ported commands match C option-for-option — `--word-diff`, `--histogram/--patience`, `-S/-G` pickaxe, `--dirstat`, whitespace family (`-w/-b`), `--relative`
+
+### Network Transport
+
+- [ ] **TRAN-02**: User clones/fetches/pushes over the network — ssh/http transports plus daemon, protocol v2 negotiation, and credentials (conversion-plan Phase E order; sync-first stack, plan amendment during planning if a dependency is needed)
+
+### Email & Patch Exchange
+
+- [ ] **MAIL-01**: User exchanges patches via `am`, `format-patch`, `mailinfo`/`mailsplit`
+- [ ] **MAIL-02**: User sends patches via `send-email` plus `imap-send`
+
+### Submodules
+
+- [ ] **SUBM-01**: User works with nested repos via the full `submodule` family (add/update/init/foreach/sync)
+
+### Signing & Verification
+
+- [ ] **SIGN-01**: Supply-chain trust via `verify-commit`/`verify-tag` plus signing in `commit`/`tag` (`gpgsig` headers already preserved byte-exactly for hash correctness)
+
+### Interactive
+
+- [ ] **INTER-01**: User works interactively via `add -p`, `rebase -i`, `stash -p` plus pager/color handling (tested with a pty oracle since the differential harness cannot cover terminal interaction)
+
+### Filters & Platform
+
+- [ ] **FILT-01**: Checkouts convert correctly via smudge/clean filter drivers plus the full `core.autocrlf` matrix
+- [ ] **FILT-02**: Monorepos scale via sparse-checkout/sparse-index/split-index
+
+### Remaining Odds & Ends
+
+- [ ] **MISC-01**: No builtin left behind — `bisect`, `notes`/`replace`, `daemon`, `shell`, `filter-branch`, `scalar`, `diagnose`, `bugreport`, `hook`, `backfill` and every other remaining C builtin with C-identical behavior
+- [ ] **MISC-02**: Migrations stay possible via the one-way legacy importers (`cvs*`/`svn`/`p4`/`quiltimport`/`archimport`)
+
 ## v2 Requirements
 
-Deferred to future release. Tracked but not in current roadmap.
-
-### Integrity & Depth
-
-- **INTG-01**: Full `fsck` completion (`--strict`, `--connectivity-only`, `--no-dangling`, `--full`, `--lost-found`, message catalog) (gate: `t/t1450`)
-- **DEPTH-01**: Option-parity depth on routed commands (`--word-diff`, `--histogram/--patience`, `-S/-G` pickaxe, `--dirstat`, whitespace family `-w/-b`, `--relative`)
-
-### Full Transport
-
-- **TRAN-02**: Full network transports (ssh/http/daemon, network push) as the next milestone in plan order
+None — the goal is full conversion, so nothing is deferred. Phasing lives in ROADMAP.md.
 
 ## Out of Scope
 
@@ -71,14 +101,8 @@ Explicitly excluded. Documented to prevent scope creep.
 | Feature | Reason |
 |---------|--------|
 | New/different UX on top of git semantics | Breaks the byte-identical core value; differential gate would fail by construction |
-| `submodule` family | Historically buggiest corner of C git; plan defers to Phase F |
-| Email stack (`am`, `format-patch`, `send-email`) | Separate product surface with its own format quirks |
-| GPG/SSH signature verification | Platform-entangled crypto stack; parse-and-preserve `gpgsig` headers only |
-| Interactive UI (`add -p`, `rebase -i`, pager, `--color`) | Terminal-interactive code untestable in the differential harness |
-| Smudge/clean filters + full autocrlf matrix | Multiplies the test matrix of core flows; revisit only if Windows becomes a target |
-| Sparse-checkout / sparse-index / split-index | Layers on top of in-flight index work (B2/B4 partial); premature surface |
-| Adding `clap`/`serde`/`tokio`/async or new crypto deps | Locked architecture decision; requires plan amendment |
-| `filter-branch`, `scalar`, `gitweb`/GUI, `cvs*`/`svn` bridges | Low daily use or explicitly not planned in conversion-plan Phase F |
+| `gitweb`/`instaweb`, `gui`/`citool` | Separate Perl/Tcl applications, not part of the C implementation |
+| Adding `clap`/`serde`/`tokio`/async or new crypto deps casually | Locked architecture decision; plan amendment required for any new dep |
 
 ## Traceability
 
@@ -108,11 +132,23 @@ Which phases cover which requirements. Updated during roadmap creation.
 | STORE-03 | TBD | Pending |
 | STORE-04 | TBD | Pending |
 | TRAN-01 | TBD | Pending |
+| INTG-01 | TBD | Pending |
+| DEPTH-01 | TBD | Pending |
+| TRAN-02 | TBD | Pending |
+| MAIL-01 | TBD | Pending |
+| MAIL-02 | TBD | Pending |
+| SUBM-01 | TBD | Pending |
+| SIGN-01 | TBD | Pending |
+| INTER-01 | TBD | Pending |
+| FILT-01 | TBD | Pending |
+| FILT-02 | TBD | Pending |
+| MISC-01 | TBD | Pending |
+| MISC-02 | TBD | Pending |
 
 **Coverage:**
-- v1 requirements: 22 total
+- v1 requirements: 34 total
 - Mapped to phases: 0
-- Unmapped: 22
+- Unmapped: 34
 
 ---
 *Requirements defined: 2026-09-26*

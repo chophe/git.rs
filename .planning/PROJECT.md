@@ -2,7 +2,7 @@
 
 ## What This Is
 
-Standalone pure-Rust reimplementation of git (upstream C git `v2.55.0` at repo root as reference/behavior oracle only, no FFI). The active work lives under `crates/` (24-member workspace, binary `git` from `git-cli`); on-disk formats stay byte-compatible so Rust and C git interoperate crosswise. For developers working on the Rust port and its differential/crosswise verification harness.
+Standalone pure-Rust reimplementation of git (upstream C git `v2.55.0` at repo root as reference/behavior oracle only, no FFI). The active work lives under `crates/` (24-member workspace, binary `git` from `git-cli`); on-disk formats stay byte-compatible so Rust and C git interoperate crosswise. The goal is the complete conversion of **all** of C git to Rust — every builtin, transport, and capability — with byte-identical behavior. For developers working on the Rust port and its differential/crosswise verification harness.
 
 ## Core Value
 
@@ -23,14 +23,16 @@ Byte-identical behavior with C git — same stdout/stderr/exit codes and crosswi
 
 ### Active
 
+- [ ] Complete the full conversion — every remaining C builtin, transport, and capability lands with byte-identical parity (nothing stays deferred; phasing in ROADMAP.md)
 - [ ] Continue porting remaining builtins to byte-identical parity (per `docs/plan/` phase-a/phase-b task lists)
 - [ ] Hold all phase done-gates green: `cargo test --workspace`, proptests, differential byte-identical, crosswise compat, coverage, no scoreboard regression
 - [ ] Establish GSD planning scaffold (PROJECT/REQUIREMENTS/ROADMAP/STATE) for this work
 
 ### Out of Scope
 
-- Network/transport (fetch/push, Phase 10+) — explicitly out of the core-object-layer scope per `docs/plan/README.md`
-- FFI into C git — standalone rewrite by locked decision, never link C
+- New/different UX on top of git semantics — fork-grade divergence that fails the differential gate by construction; innovate only in library APIs and speed
+- `gitweb`/`instaweb`, `gui`/`citool` — separate Perl/Tcl applications, not part of the C implementation; stretch only
+- FFI into C git — method exclusion: standalone rewrite by locked decision, never link C
 - C-tree changes except as reference/oracle reads — C is the spec, `t/` wins on disagreement
 
 ## Context
@@ -42,6 +44,7 @@ Byte-identical behavior with C git — same stdout/stderr/exit codes and crosswi
 - `scripts/shim-git` routes ported commands to `crates/target/debug/git`, everything else to system git
 - Known intentional deviations logged in `docs/plan/FOLLOWUPS.md` (e.g. SHA-1 not yet collision-detecting in some paths, non-deltified pack writes, UTC-only dates) — do not silently "fix"
 - Prior planning material (`docs/plan/`, `specs/`) intentionally not yet ingested (user skipped ingest); treat as source material for requirements/roadmap steps
+- Scope decision (2026-09-26): full conversion of all C git — nothing deferred; previously v2/out-of-scope items (fsck, depth parity, network, submodules, email, signing, interactive, filters, sparse) promoted into v1
 
 ## Constraints
 
@@ -60,6 +63,7 @@ Byte-identical behavior with C git — same stdout/stderr/exit codes and crosswi
 | C git is the spec, `t/` wins ties | Guarantees observable parity over source fidelity | ✓ Good |
 | Thin CLI + `Command` trait per builtin | Mirrors C `builtin/` layout, keeps commands unit-testable | ✓ Good |
 | GSD scaffold for this repo now | Need phased execution tracking for remaining port work | — Pending |
+| Full conversion of all C git | User goal 2026-09-26: every builtin/transport/capability lands with parity; nothing stays deferred | — Pending |
 
 ## Evolution
 
