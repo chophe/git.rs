@@ -110,45 +110,45 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| REFS-01 | TBD | Pending |
-| REFS-02 | TBD | Pending |
-| CONF-01 | TBD | Pending |
-| SCRIPT-01 | TBD | Pending |
-| SCRIPT-02 | TBD | Pending |
-| SCRIPT-03 | TBD | Pending |
-| INSP-01 | TBD | Pending |
-| INSP-02 | TBD | Pending |
-| LIFE-01 | TBD | Pending |
-| LIFE-02 | TBD | Pending |
-| LIFE-03 | TBD | Pending |
-| LIFE-04 | TBD | Pending |
-| MERGE-01 | TBD | Pending |
-| SEQ-01 | TBD | Pending |
-| SEQ-02 | TBD | Pending |
-| SEQ-03 | TBD | Pending |
-| SEQ-04 | TBD | Pending |
-| STORE-01 | TBD | Pending |
-| STORE-02 | TBD | Pending |
-| STORE-03 | TBD | Pending |
-| STORE-04 | TBD | Pending |
-| TRAN-01 | TBD | Pending |
-| INTG-01 | TBD | Pending |
-| DEPTH-01 | TBD | Pending |
-| TRAN-02 | TBD | Pending |
-| MAIL-01 | TBD | Pending |
-| MAIL-02 | TBD | Pending |
-| SUBM-01 | TBD | Pending |
-| SIGN-01 | TBD | Pending |
-| INTER-01 | TBD | Pending |
-| FILT-01 | TBD | Pending |
-| FILT-02 | TBD | Pending |
-| MISC-01 | TBD | Pending |
-| MISC-02 | TBD | Pending |
+| REFS-01 | Phase 1 | Pending |
+| REFS-02 | Phase 1 | Pending |
+| CONF-01 | Phase 1 | Pending |
+| SCRIPT-01 | Phase 2 | Pending |
+| SCRIPT-02 | Phase 2 | Pending |
+| SCRIPT-03 | Phase 2 | Pending |
+| INSP-01 | Phase 3 | Pending |
+| INSP-02 | Phase 3 | Pending |
+| LIFE-01 | Phase 4 | Pending |
+| LIFE-02 | Phase 4 | Pending |
+| LIFE-03 | Phase 4 | Pending |
+| LIFE-04 | Phase 4 | Pending |
+| MERGE-01 | Phase 5 | Pending |
+| SEQ-01 | Phase 5 | Pending |
+| SEQ-02 | Phase 5 | Pending |
+| SEQ-03 | Phase 5 | Pending |
+| SEQ-04 | Phase 5 | Pending |
+| STORE-01 | Phase 6 | Pending |
+| STORE-02 | Phase 6 | Pending |
+| STORE-03 | Phase 6 | Pending |
+| STORE-04 | Phase 6 | Pending |
+| TRAN-01 | Phase 6 | Pending |
+| INTG-01 | Phase 7 | Pending |
+| DEPTH-01 | Phase 7 | Pending |
+| TRAN-02 | Phase 8 | Pending |
+| MAIL-01 | Phase 9 | Pending |
+| MAIL-02 | Phase 9 | Pending |
+| SUBM-01 | Phase 10 | Pending |
+| SIGN-01 | Phase 9 | Pending |
+| INTER-01 | Phase 10 | Pending |
+| FILT-01 | Phase 11 | Pending |
+| FILT-02 | Phase 11 | Pending |
+| MISC-01 | Phase 12 | Pending |
+| MISC-02 | Phase 12 | Pending |
 
 **Coverage:**
 - v1 requirements: 34 total
-- Mapped to phases: 0
-- Unmapped: 34
+- Mapped to phases: 34
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-09-26*
