@@ -6,7 +6,7 @@ use std::fmt;
 
 use git_core::Repository;
 use git_hash::Oid;
-use git_object::{parse_commit, parse_tree, ObjectKind};
+use git_object::{parse_commit, parse_tag, parse_tree, ObjectKind};
 use git_odb::Odb;
 use git_refs::RefStore;
 
@@ -68,6 +68,12 @@ impl Resolver {
 
     fn resolve_inner(&self, arg: &str) -> Result<Oid, ResolveError> {
         let unknown = || ResolveError::Unknown { arg: arg.to_string() };
+
+        // `<rev>^{<type>}` / `<rev>^{}` peeling (C `get_oid` brace forms).
+        if let Some((base, kind)) = split_brace_peel(arg) {
+            let base_oid = self.resolve_inner(base)?;
+            return self.peel_brace(base_oid, kind).map_err(|_| unknown());
+        }
 
         // `<rev>:<path>`: object at `path` inside the tree of `rev`.
         if let Some((rev, path)) = arg.split_once(':') {
@@ -219,6 +225,70 @@ impl Resolver {
         }
     }
 
+    /// Apply a `^{<type>}` / `^{}` peel starting from `oid` (C
+    /// `get_oid` brace forms + `deref_tag`/`peel_object`).
+    fn peel_brace(&self, oid: Oid, kind: &str) -> Result<Oid, ()> {
+        match kind {
+            // `^{}`: dereference tags to the underlying object.
+            "" | "object" => {
+                let mut cur = oid;
+                loop {
+                    let obj = self.odb.read(&cur).map_err(|_| ())?;
+                    if obj.kind != ObjectKind::Tag {
+                        return Ok(cur);
+                    }
+                    cur = parse_tag(&obj.data, self.odb.algorithm()).map_err(|_| ())?.object;
+                }
+            }
+            "commit" => {
+                let mut cur = oid;
+                loop {
+                    let obj = self.odb.read(&cur).map_err(|_| ())?;
+                    match obj.kind {
+                        ObjectKind::Commit => return Ok(cur),
+                        ObjectKind::Tag => {
+                            cur = parse_tag(&obj.data, self.odb.algorithm()).map_err(|_| ())?.object;
+                        }
+                        _ => return Err(()),
+                    }
+                }
+            }
+            "tree" => {
+                let mut cur = oid;
+                loop {
+                    let obj = self.odb.read(&cur).map_err(|_| ())?;
+                    match obj.kind {
+                        ObjectKind::Tree => return Ok(cur),
+                        ObjectKind::Commit => {
+                            cur = commit_tree_oid(&obj.data, self.odb.algorithm()).ok_or(())?;
+                        }
+                        ObjectKind::Tag => {
+                            cur = parse_tag(&obj.data, self.odb.algorithm()).map_err(|_| ())?.object;
+                        }
+                        _ => return Err(()),
+                    }
+                }
+            }
+            "tag" => {
+                let obj = self.odb.read(&oid).map_err(|_| ())?;
+                if obj.kind == ObjectKind::Tag {
+                    Ok(oid)
+                } else {
+                    Err(())
+                }
+            }
+            "blob" => {
+                let obj = self.odb.read(&oid).map_err(|_| ())?;
+                if obj.kind == ObjectKind::Blob {
+                    Ok(oid)
+                } else {
+                    Err(())
+                }
+            }
+            _ => Err(()),
+        }
+    }
+
     fn commit_parents(&self, oid: &Oid) -> Option<Vec<Oid>> {
         let obj = self.odb.read(oid).ok()?;
         let commit = parse_commit(&obj.data, self.odb.algorithm()).ok()?;
@@ -236,6 +306,20 @@ impl Resolver {
 
 fn oid_hex(o: &Oid) -> String {
     format!("{o}")
+}
+
+/// Split a trailing `^{<type>}` / `^{}` peel suffix off a revision
+/// string. Returns `(base, kind)`.
+fn split_brace_peel(arg: &str) -> Option<(&str, &str)> {
+    if !arg.ends_with('}') {
+        return None;
+    }
+    let idx = arg.rfind("^{")?;
+    let base = &arg[..idx];
+    if base.is_empty() {
+        return None;
+    }
+    Some((base, &arg[idx + 2..arg.len() - 1]))
 }
 
 /// Split the trailing `~<n>` / `^<n>` group off a revision string.

@@ -120,7 +120,11 @@ fn cmd_show(ctx: &RepoContext, args: &[String], out: &mut dyn Write) -> Result<(
     let refname = refs.first().map_or("HEAD", String::as_str);
     let repo = ctx.repository()?;
     crate::resolve_arg(&repo, refname).map(|_| ())?;
-    let entries = git_refs::reflog::read_all(&repo.git_dir, refname, repo.hash_algo);
+    // Read through the dwimmed log name (C `cmd_log_reflog` resolves
+    // `main` to `refs/heads/main`'s log); display keeps the as-given
+    // spelling (probed on the tree binary).
+    let logname = dwim_log(&repo, refname).unwrap_or_else(|| refname.to_string());
+    let entries = git_refs::reflog::read_all(&repo.git_dir, &logname, repo.hash_algo);
     let odb = if paths.is_empty() {
         None
     } else {
@@ -159,8 +163,20 @@ fn cmd_list(ctx: &RepoContext, args: &[String], out: &mut dyn Write) -> Result<(
 /// Logs visible from this worktree: its own git dir plus the common dir's
 /// shared logs (per-worktree refs of other worktrees stay out). With
 /// `all_worktrees`, every linked worktree's git dir is included too (C
-/// `collect_reflog` over `get_worktrees`).
+/// `collect_reflog` over `get_worktrees`). Each target keeps its own git
+/// dir: same-named logs in different worktrees are distinct logs.
 fn worktree_logs(repo: &git_core::Repository, all_worktrees: bool) -> Vec<String> {
+    worktree_log_targets(repo, all_worktrees).into_iter().map(|t| t.name).collect()
+}
+
+/// One reflog file plus the git dir that owns it.
+struct LogTarget {
+    git_dir: std::path::PathBuf,
+    name: String,
+}
+
+fn worktree_log_targets(repo: &git_core::Repository, all_worktrees: bool) -> Vec<LogTarget> {
+    let mut out: Vec<LogTarget> = Vec::new();
     if all_worktrees {
         let mut dirs: Vec<std::path::PathBuf> = vec![repo.git_dir.clone()];
         if repo.common_dir != repo.git_dir {
@@ -176,20 +192,27 @@ fn worktree_logs(repo: &git_core::Repository, all_worktrees: bool) -> Vec<String
                 }
             }
         }
-        let refs: Vec<&std::path::Path> = dirs.iter().map(|p| p.as_path()).collect();
-        return git_refs::reflog::collect_logs(&refs);
+        for d in &dirs {
+            for n in git_refs::reflog::collect_logs(&[d.as_path()]) {
+                out.push(LogTarget { git_dir: d.clone(), name: n });
+            }
+        }
+        out.sort_by(|a, b| (&a.git_dir, &a.name).cmp(&(&b.git_dir, &b.name)));
+        out.dedup_by(|a, b| a.git_dir == b.git_dir && a.name == b.name);
+        return out;
     }
-    if repo.common_dir == repo.git_dir {
-        return git_refs::reflog::collect_logs(&[repo.git_dir.as_path()]);
+    for n in git_refs::reflog::collect_logs(&[repo.git_dir.as_path()]) {
+        out.push(LogTarget { git_dir: repo.git_dir.clone(), name: n });
     }
-    let mut out = git_refs::reflog::collect_logs(&[repo.git_dir.as_path()]);
-    for name in git_refs::reflog::collect_logs(&[repo.common_dir.as_path()]) {
-        if !is_per_worktree_ref(&name) {
-            out.push(name);
+    if repo.common_dir != repo.git_dir {
+        for n in git_refs::reflog::collect_logs(&[repo.common_dir.as_path()]) {
+            if !is_per_worktree_ref(&n) {
+                out.push(LogTarget { git_dir: repo.common_dir.clone(), name: n });
+            }
         }
     }
-    out.sort();
-    out.dedup();
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out.dedup_by(|a, b| a.name == b.name);
     out
 }
 
@@ -403,20 +426,26 @@ fn expire_one(
     selector: &DeleteSelector,
     flags: PruneFlags,
 ) -> i32 {
-    let lock = match lock_ref_for_expire(repo, refname) {
+    let git_dir = log_git_dir(repo, refname);
+    let lock = match lock_ref_for_expire(repo, &git_dir, refname) {
         Some(l) => l,
         None => return -1,
     };
-    let git_dir = log_git_dir(repo, refname);
     let entries = git_refs::reflog::read_all(&git_dir, refname, repo.hash_algo);
+    // C `reflog_delete` date form counts entries older than the date, then
+    // the expire recno counter prunes exactly the count-th oldest entry
+    // (probed: a date newer than every entry removes just the newest one).
     let prune: Vec<bool> = match selector {
         DeleteSelector::Index(n) => {
             // Nth newest: index len-1-n in oldest-first order.
             entries.iter().enumerate().map(|(i, _)| i + 1 + n == entries.len()).collect()
         }
-        DeleteSelector::OlderThan(ts) => entries.iter().map(|e| *ts != 0 && e.timestamp < *ts).collect(),
+        DeleteSelector::OlderThan(ts) => {
+            let count = entries.iter().filter(|e| *ts != 0 && e.timestamp < *ts).count();
+            entries.iter().enumerate().map(|(i, _)| count != 0 && i + 1 == count).collect()
+        }
     };
-    let rc = apply_prune(repo, refname, &git_dir, &entries, &prune, flags);
+    let rc = apply_prune(repo, refname, &git_dir, &entries, &prune, flags, true);
     drop(lock);
     rc
 }
@@ -446,8 +475,8 @@ fn cmd_drop(ctx: &RepoContext, args: &[String], out: &mut dyn Write) -> Result<(
     }
     let repo = ctx.repository()?;
     if do_all {
-        for name in worktree_logs(&repo, !single_worktree) {
-            git_refs::reflog::remove_log(&log_git_dir(&repo, &name), &name);
+        for t in worktree_log_targets(&repo, !single_worktree) {
+            git_refs::reflog::remove_log(&t.git_dir, &t.name);
         }
         return Ok(());
     }
@@ -648,14 +677,14 @@ fn cmd_expire(ctx: &RepoContext, args: &[String], out: &mut dyn Write) -> Result
         i += 1;
     }
     let repo = ctx.repository()?;
-    let targets: Vec<String> = if do_all {
-        worktree_logs(&repo, !single_worktree)
+    let targets: Vec<LogTarget> = if do_all {
+        worktree_log_targets(&repo, !single_worktree)
     } else {
         let mut v = Vec::new();
         let mut failed = false;
         for r in &rest {
             match dwim_log(&repo, r) {
-                Some(name) => v.push(name),
+                Some(name) => v.push(LogTarget { git_dir: log_git_dir(&repo, &name), name }),
                 None => {
                     eprintln!("error: reflog could not be found: '{r}'");
                     failed = true;
@@ -668,10 +697,10 @@ fn cmd_expire(ctx: &RepoContext, args: &[String], out: &mut dyn Write) -> Result
         v
     };
     let mut failed = false;
-    for name in &targets {
-        let mut policy = expire_policy(&repo, name, cli_total, cli_unreach);
+    for t in &targets {
+        let mut policy = expire_policy(&repo, &t.name, cli_total, cli_unreach);
         policy.stalefix = stalefix;
-        if expire_with_policy(&repo, name, &policy, flags) != 0 {
+        if expire_with_policy(&repo, &t.git_dir, &t.name, &policy, flags, do_all) != 0 {
             failed = true;
         }
     }
@@ -701,12 +730,19 @@ fn parse_expiry_cli(v: &str, opt: &str) -> Result<i64, CommandError> {
 /// Hold the ref lock across one ref's rewrite like C
 /// (`lock_ref_oid_basic`); contention (or other lock failure) prints C's
 /// `cannot lock ref` error and fails the ref. Returns `None` on failure.
+/// Per-worktree logs (`HEAD`, `refs/worktree/*`, ...) lock in their own
+/// git dir; shared refs lock in the common dir.
 fn lock_ref_for_expire(
     repo: &git_core::Repository,
+    git_dir: &std::path::Path,
     refname: &str,
 ) -> Option<git_refs::lock::LockFile> {
-    let store = git_refs::RefStore::from_repo(repo);
-    match git_refs::lock::LockFile::acquire(&store.common_dir().join(refname)) {
+    let lock_dir = if refname == "HEAD" || is_per_worktree_ref(refname) {
+        git_dir
+    } else {
+        repo.common_dir.as_path()
+    };
+    match git_refs::lock::LockFile::acquire(&lock_dir.join(refname)) {
         Ok(l) => Some(l),
         Err(e) => {
             eprintln!("error: cannot lock ref '{refname}': {e}");
@@ -716,17 +752,19 @@ fn lock_ref_for_expire(
 }
 
 /// Expire one ref under a fully-resolved policy. Returns 0 on success.
+/// `from_all` selects the dry-run verbose wording (see [`apply_prune`]).
 fn expire_with_policy(
     repo: &git_core::Repository,
+    git_dir: &std::path::Path,
     refname: &str,
     policy: &ExpirePolicy,
     flags: PruneFlags,
+    from_all: bool,
 ) -> i32 {
-    let lock = match lock_ref_for_expire(repo, refname) {
+    let lock = match lock_ref_for_expire(repo, git_dir, refname) {
         Some(l) => l,
         None => return -1,
     };
-    let git_dir = log_git_dir(repo, refname);
     if !git_dir.join("logs").join(refname).is_file() {
         // Raced away after locking: nothing to do (C returns success).
         return 0;
@@ -737,7 +775,7 @@ fn expire_with_policy(
     // Oldest-first evaluation (C `for_each_reflog_ent` order).
     let prune: Vec<bool> =
         entries.iter().map(|e| should_prune_entry(&reach, odb.as_ref(), repo, policy, e)).collect();
-    let rc = apply_prune(repo, refname, &git_dir, &entries, &prune, flags);
+    let rc = apply_prune(repo, refname, &git_dir, &entries, &prune, flags, from_all);
     drop(lock);
     rc
 }
@@ -746,6 +784,11 @@ fn expire_with_policy(
 /// (`keep`/`prune`/`would prune`, C `should_expire_reflog_ent_verbose`),
 /// rewrite the log unless dry-run (with `--rewrite` chaining), and update
 /// the ref to the newest kept entry under `--updateref`.
+///
+/// `would_wording` selects the dry-run prune wording: C prints
+/// `would prune` for `--all` expires and `delete`, but plain `prune` for
+/// explicit-ref expires (the policy callback's `dry_run` is only set on
+/// the `--all` path — probed tree-binary quirk, replicated verbatim).
 fn apply_prune(
     repo: &git_core::Repository,
     refname: &str,
@@ -753,11 +796,12 @@ fn apply_prune(
     entries: &[git_refs::reflog::ReflogEntry],
     prune: &[bool],
     flags: PruneFlags,
+    would_wording: bool,
 ) -> i32 {
     if flags.verbose {
         for (e, p) in entries.iter().zip(prune.iter()) {
             if *p {
-                println!("{} {}", prune_word(flags.dry_run), e.message);
+                println!("{} {}", prune_word(flags.dry_run && would_wording), e.message);
             } else {
                 println!("keep {}", e.message);
             }
@@ -1025,6 +1069,40 @@ fn ref_is_direct(repo: &git_core::Repository, refname: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use git_hash::HashAlgorithm;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    struct TempDir(PathBuf);
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).ok();
+        }
+    }
+
+    /// A repo with a two-entry HEAD log plus a branch log.
+    fn repo_with_log() -> (TempDir, git_core::Repository) {
+        use git_core::{RepoEnv, Repository};
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!("git-reflog-cmd-test-{}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let git = dir.join(".git");
+        std::fs::create_dir_all(git.join("refs/heads")).unwrap();
+        std::fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(git.join("config"), "[user]\n\tname = T\n\temail = t@example.com\n").unwrap();
+        let algo = HashAlgorithm::Sha1;
+        let old = *algo.null_oid();
+        let new = *algo.empty_blob();
+        std::fs::write(git.join("refs/heads/main"), format!("{new}\n")).unwrap();
+        let ident = "T Est <t@example.com> 1752327337 +0000";
+        git_refs::reflog::append(&git, "HEAD", &old, &new, ident, "commit (initial): probe").unwrap();
+        git_refs::reflog::append(&git, "HEAD", &new, &new, ident, "commit: second").unwrap();
+        git_refs::reflog::append(&git, "refs/heads/main", &old, &new, ident, "commit (initial): probe").unwrap();
+        let repo = Repository::discover_from(&dir, &RepoEnv::default()).unwrap();
+        (TempDir(dir), repo)
+    }
 
     #[test]
     fn prune_flag_parsing() {
@@ -1041,5 +1119,118 @@ mod tests {
         assert_eq!(parse_expiry_arg("false"), 0);
         assert_eq!(parse_expiry_arg("all"), i64::MAX);
         assert_eq!(parse_expiry_arg("garbage-timestamp-xyz"), 0);
+    }
+
+    #[test]
+    fn show_renders_newest_first() {
+        let (tmp, _) = repo_with_log();
+        let ctx = RepoContext::at(&tmp.0);
+        let mut buf = Vec::new();
+        Reflog.run(&ctx, &["show".to_string(), "HEAD".to_string()], &mut buf).unwrap();
+        let text = String::from_utf8(buf).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].ends_with("HEAD@{0}: commit: second"), "{}", lines[0]);
+        assert!(lines[1].ends_with("HEAD@{1}: commit (initial): probe"), "{}", lines[1]);
+    }
+
+    #[test]
+    fn show_dwims_short_names() {
+        let (tmp, _) = repo_with_log();
+        let ctx = RepoContext::at(&tmp.0);
+        let mut buf = Vec::new();
+        Reflog.run(&ctx, &["show".to_string(), "main".to_string()], &mut buf).unwrap();
+        let text = String::from_utf8(buf).unwrap();
+        assert!(text.contains("main@{0}"), "{text}");
+    }
+
+    #[test]
+    fn show_unresolvable_ref_dies_like_c() {
+        let (tmp, _) = repo_with_log();
+        let ctx = RepoContext::at(&tmp.0);
+        let mut buf = Vec::new();
+        let err = Reflog
+            .run(&ctx, &["show".to_string(), "refs/heads/nope".to_string()], &mut buf)
+            .unwrap_err();
+        assert_eq!(err.code, 128);
+        assert!(err.message.contains("ambiguous argument 'refs/heads/nope'"), "{}", err.message);
+    }
+
+    #[test]
+    fn exists_reports_silently() {
+        let (tmp, _) = repo_with_log();
+        let ctx = RepoContext::at(&tmp.0);
+        let mut buf = Vec::new();
+        Reflog.run(&ctx, &["exists".to_string(), "HEAD".to_string()], &mut buf).unwrap();
+        let err = Reflog
+            .run(&ctx, &["exists".to_string(), "refs/heads/nope".to_string()], &mut buf)
+            .unwrap_err();
+        assert_eq!(err.code, 1);
+        assert!(err.message.is_empty());
+    }
+
+    #[test]
+    fn delete_index_removes_nth_newest() {
+        let (tmp, _) = repo_with_log();
+        let ctx = RepoContext::at(&tmp.0);
+        let mut buf = Vec::new();
+        Reflog.run(&ctx, &["delete".to_string(), "HEAD@{1}".to_string()], &mut buf).unwrap();
+        let entries = git_refs::reflog::read_all(&tmp.0.join(".git"), "HEAD", HashAlgorithm::Sha1);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].message, "commit: second");
+    }
+
+    #[test]
+    fn delete_requires_selector() {
+        let (tmp, _) = repo_with_log();
+        let ctx = RepoContext::at(&tmp.0);
+        let mut buf = Vec::new();
+        let err = Reflog.run(&ctx, &["delete".to_string(), "HEAD".to_string()], &mut buf).unwrap_err();
+        assert_eq!(err.code, 255);
+    }
+
+    #[test]
+    fn expire_total_window_prunes() {
+        let (tmp, _) = repo_with_log();
+        let ctx = RepoContext::at(&tmp.0);
+        // Entries are dated 2025; expire everything before 2026.
+        let mut buf = Vec::new();
+        Reflog
+            .run(&ctx, &["expire".to_string(), "--expire=2026-01-01".to_string(), "HEAD".to_string()], &mut buf)
+            .unwrap();
+        let entries = git_refs::reflog::read_all(&tmp.0.join(".git"), "HEAD", HashAlgorithm::Sha1);
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn expire_never_keeps() {
+        let (tmp, _) = repo_with_log();
+        let ctx = RepoContext::at(&tmp.0);
+        let mut buf = Vec::new();
+        Reflog
+            .run(&ctx, &["expire".to_string(), "--expire=never".to_string(), "HEAD".to_string()], &mut buf)
+            .unwrap();
+        let entries = git_refs::reflog::read_all(&tmp.0.join(".git"), "HEAD", HashAlgorithm::Sha1);
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
+    fn list_shows_logs_sorted() {
+        let (tmp, _) = repo_with_log();
+        let ctx = RepoContext::at(&tmp.0);
+        let mut buf = Vec::new();
+        Reflog.run(&ctx, &["list".to_string()], &mut buf).unwrap();
+        let text = String::from_utf8(buf).unwrap();
+        assert_eq!(text, "HEAD\nrefs/heads/main\n", "{text}");
+    }
+
+    #[test]
+    fn drop_removes_log() {
+        let (tmp, _) = repo_with_log();
+        let ctx = RepoContext::at(&tmp.0);
+        let mut buf = Vec::new();
+        Reflog.run(&ctx, &["drop".to_string(), "refs/heads/main".to_string()], &mut buf).unwrap();
+        assert!(!tmp.0.join(".git/logs/refs/heads/main").exists());
+        assert!(tmp.0.join(".git/logs/HEAD").exists());
     }
 }

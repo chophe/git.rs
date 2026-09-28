@@ -16,16 +16,32 @@ impl Command for UpdateRef {
     fn run(&self, ctx: &RepoContext, args: &[String], _out: &mut dyn Write) -> Result<(), CommandError> {
         let mut delete = false;
         let mut rest: Vec<String> = Vec::new();
-        for a in args {
+        let mut message: Option<String> = None;
+        let mut i = 0usize;
+        while i < args.len() {
+            let a = &args[i];
             match a.as_str() {
                 "-d" | "--delete" => delete = true,
-                "-m" | "--create-reflog" => {}
+                // `-m <msg>` sets the reflog message (stored for the
+                // Task-2 logging work; consumed here so it never leaks
+                // into the ref/oid operands like C's OPT_STRING).
+                "-m" => {
+                    i += 1;
+                    message = Some(
+                        args.get(i)
+                            .ok_or_else(|| CommandError::usage("update-ref: option 'm' requires a value"))?
+                            .clone(),
+                    );
+                }
+                "--create-reflog" => {}
                 s if s.starts_with('-') && s.len() > 1 => {
                     return Err(CommandError::usage(format!("update-ref: option '{s}' not supported")));
                 }
                 s => rest.push(s.to_string()),
             }
+            i += 1;
         }
+        let _ = message;
 
         let repo = ctx.repository()?;
         let store = RefStore::from_repo(&repo);
@@ -44,8 +60,10 @@ impl Command for UpdateRef {
         if rest.len() != 2 {
             return Err(CommandError::usage("update-ref: requires <ref> <new-oid>"));
         }
-        let oid = Oid::from_hex(&rest[1], algo)
-            .map_err(|_| CommandError::error(format!("invalid object name '{}'", rest[1])))?;
+        // C resolves the value as a full revision (`HEAD`, `HEAD^{tree}`,
+        // abbreviated oids), not just hex (t/t1410 "non-commit sha1s").
+        let oid = crate::resolve_arg(&repo, &rest[1])
+            .map_err(|_| CommandError::fatal(format!("fatal: {}: not a valid SHA1", rest[1])))?;
         store
             .update(&rest[0], Some(&oid))
             .map_err(|e| CommandError::fatal(format!("fatal: {e}")))?;

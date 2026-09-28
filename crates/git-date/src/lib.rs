@@ -270,6 +270,16 @@ pub fn parse(s: &str, now: Timestamp) -> Result<Timestamp, DateError> {
         Some(ts) => return Ok(ts),
         None => {}
     }
+    // US month-name dates (`May 25 2005[ 23:31:59][ TZ]`, C approxidate).
+    if let Some(ts) = parse_us_month(t)? {
+        return Ok(ts);
+    }
+    // European dotted dates (`07.04.2005[.15:15:00[.-0700]]`, C approxidate:
+    // day-first, verified by t/t1410's `main@{07.04.2005...}` delete which
+    // only passes when 07.04 reads as April 7).
+    if let Some(ts) = parse_european(t)? {
+        return Ok(ts);
+    }
     Err(DateError::UnknownFormat)
 }
 
@@ -330,11 +340,12 @@ fn shift_months(now: Timestamp, amount: i64) -> Timestamp {
 }
 
 fn parse_iso(s: &str) -> Result<Option<Timestamp>, DateError> {
-    // Expected: YYYY-MM-DD[ T]HH:MM[:SS][ TZ]
+    // Expected: YYYY-MM-DD[ T]HH:MM[:SS][ TZ] (bare dates mean local midnight,
+    // like C approxidate).
     let s = s.replace('T', " ");
     let (date_part, rest) = match s.split_once(' ') {
-        Some(x) => x,
-        None => return Ok(None),
+        Some((d, r)) => (d, Some(r)),
+        None => (s.as_str(), None),
     };
     let mut parts = date_part.split('-');
     let y = match parts.next().and_then(parse_digits) {
@@ -352,6 +363,13 @@ fn parse_iso(s: &str) -> Result<Option<Timestamp>, DateError> {
     if !(1..=12).contains(&mo) || !(1..=31).contains(&d) {
         return Err(DateError::OutOfRange);
     }
+
+    let Some(rest) = rest else {
+        // Bare date: local midnight.
+        let wall = secs_from_ymdhms(y, mo, d, 0, 0, 0).ok_or(DateError::OutOfRange)?;
+        let offset = tz::wall_to_local(wall).1;
+        return Ok(Some(Timestamp::new(wall - (offset as i64) * 60, offset)));
+    };
 
     let (time_part, tz_part) = match rest.split_once(' ') {
         Some((tp, tz)) => (tp, Some(tz)),
@@ -380,6 +398,167 @@ fn parse_iso(s: &str) -> Result<Option<Timestamp>, DateError> {
         None => tz::wall_to_local(wall).1,
     };
 
+    Ok(Some(Timestamp::new(wall - (offset as i64) * 60, offset)))
+}
+
+/// US month-name dates (`May 25 2005[ 23:31:59][ TZ]`, C approxidate):
+/// full and abbreviated English month names, case-insensitive.
+fn parse_us_month(s: &str) -> Result<Option<Timestamp>, DateError> {
+    let mut parts = s.split_whitespace();
+    let mon_s = match parts.next() {
+        Some(m) => m,
+        None => return Ok(None),
+    };
+    let mo = match month_number(mon_s) {
+        Some(m) => m,
+        None => return Ok(None),
+    };
+    let d = match parts.next().and_then(parse_digits) {
+        Some(d) => d as u32,
+        None => return Ok(None),
+    };
+    let y = match parts.next().and_then(parse_digits) {
+        Some(y) => y as i64,
+        None => return Ok(None),
+    };
+    if !(1..=31).contains(&d) || y < 0 {
+        return Err(DateError::OutOfRange);
+    }
+    // Optional time and timezone; bare dates mean local midnight.
+    let (h, mi, sec, offset) = match parts.next() {
+        None => {
+            let wall = secs_from_ymdhms(y, mo, d, 0, 0, 0).ok_or(DateError::OutOfRange)?;
+            (0, 0, 0, tz::wall_to_local(wall).1)
+        }
+        Some(time) => {
+            let mut tp = time.split(':');
+            let h = match tp.next().and_then(parse_digits) {
+                Some(h) => h as u32,
+                None => return Ok(None),
+            };
+            let mi = match tp.next().and_then(parse_digits) {
+                Some(mi) => mi as u32,
+                None => return Ok(None),
+            };
+            let sec = match tp.next().and_then(parse_digits) {
+                Some(x) => x as u32,
+                None => 0,
+            };
+            if h > 23 || mi > 59 || sec > 60 {
+                return Err(DateError::OutOfRange);
+            }
+            let wall = secs_from_ymdhms(y, mo, d, h, mi, sec).ok_or(DateError::OutOfRange)?;
+            let offset = match parts.next() {
+                Some(tz) => parse_tz(tz).ok_or(DateError::InvalidTimezone)?,
+                None => tz::wall_to_local(wall).1,
+            };
+            // Trailing garbage (not a tz) fails the whole parse.
+            if parts.next().is_some() {
+                return Ok(None);
+            }
+            (h, mi, sec, offset)
+        }
+    };
+    let wall = secs_from_ymdhms(y, mo, d, h, mi, sec).ok_or(DateError::OutOfRange)?;
+    Ok(Some(Timestamp::new(wall - (offset as i64) * 60, offset)))
+}
+
+/// English month name (full or abbreviated, case-insensitive) to number.
+fn month_number(s: &str) -> Option<u32> {
+    const FULL: [&str; 12] = [
+        "january",
+        "february",
+        "march",
+        "april",
+        "may",
+        "june",
+        "july",
+        "august",
+        "september",
+        "october",
+        "november",
+        "december",
+    ];
+    let lower = s.to_ascii_lowercase();
+    for (i, full) in FULL.iter().enumerate() {
+        if lower == *full || (lower.len() == 3 && full.starts_with(lower.as_str())) {
+            return Some(i as u32 + 1);
+        }
+    }
+    None
+}
+
+/// European dotted dates (`07.04.2005[.15:15:00[.-0700]]`, C approxidate):
+/// day-first; when the day slot is invalid as a month but the month slot
+/// is a valid day, month-first is accepted (C's leniency for `04.13.2005`
+/// shapes).
+fn parse_european(s: &str) -> Result<Option<Timestamp>, DateError> {
+    let t = s.trim();
+    // Split off an optional trailing timezone (`.±HHMM` / `.±HH:MM`).
+    let (t, tz) = match t.rsplit_once('.') {
+        Some((head, tail))
+            if (tail.starts_with('+') || tail.starts_with('-')) && tail.len() > 1 =>
+        {
+            (head, Some(tail))
+        }
+        _ => (t, None),
+    };
+    // Split off an optional time (`.HH:MM[:SS]`).
+    let (t, time) = match t.rsplit_once('.') {
+        Some((head, tail)) if tail.contains(':') => (head, Some(tail)),
+        _ => (t, None),
+    };
+    let mut dp = t.split('.');
+    let a = match dp.next().and_then(parse_digits) {
+        Some(a) => a as u32,
+        None => return Ok(None),
+    };
+    let b = match dp.next().and_then(parse_digits) {
+        Some(b) => b as u32,
+        None => return Ok(None),
+    };
+    let y = match dp.next().and_then(parse_digits) {
+        Some(y) => y as i64,
+        None => return Ok(None),
+    };
+    if dp.next().is_some() {
+        return Ok(None);
+    }
+    // Day-first; fall back to month-first when day-first is impossible.
+    let (d, mo) = if (1..=31).contains(&a) && (1..=12).contains(&b) {
+        (a, b)
+    } else if (1..=12).contains(&a) && (1..=31).contains(&b) {
+        (b, a)
+    } else {
+        return Err(DateError::OutOfRange);
+    };
+    let (h, mi, sec) = match time {
+        None => (0, 0, 0),
+        Some(time) => {
+            let mut tp = time.split(':');
+            let h = match tp.next().and_then(parse_digits) {
+                Some(h) => h as u32,
+                None => return Ok(None),
+            };
+            let mi = match tp.next().and_then(parse_digits) {
+                Some(mi) => mi as u32,
+                None => return Ok(None),
+            };
+            let sec = match tp.next().and_then(parse_digits) {
+                Some(x) => x as u32,
+                None => 0,
+            };
+            if h > 23 || mi > 59 || sec > 60 {
+                return Err(DateError::OutOfRange);
+            }
+            (h, mi, sec)
+        }
+    };
+    let wall = secs_from_ymdhms(y, mo, d, h, mi, sec).ok_or(DateError::OutOfRange)?;
+    let offset = match tz {
+        Some(tz) => parse_tz(tz).ok_or(DateError::InvalidTimezone)?,
+        None => tz::wall_to_local(wall).1,
+    };
     Ok(Some(Timestamp::new(wall - (offset as i64) * 60, offset)))
 }
 

@@ -475,9 +475,36 @@ impl Repository {
         if let Some(refpath) = content.strip_prefix("ref: ") {
             let refpath = refpath.trim();
             let f = self.common_dir.join(refpath);
-            let s = std::fs::read_to_string(&f).ok()?;
-            return git_hash::Oid::from_hex(s.trim(), self.hash_algo).ok();
+            if let Ok(s) = std::fs::read_to_string(&f) {
+                if let Ok(oid) = git_hash::Oid::from_hex(s.trim(), self.hash_algo) {
+                    return Some(oid);
+                }
+            }
+            // Loose ref absent (packed by `pack-refs --prune`): fall back
+            // to packed-refs like C's ref resolution does. git-core sits
+            // below git-refs in the layering, so this small parse lives
+            // here instead of reusing `RefStore`.
+            return self.packed_oid(refpath);
         }
         git_hash::Oid::from_hex(content.trim(), self.hash_algo).ok()
+    }
+
+    /// Look up one refname in `packed-refs` (peeled `^` continuations and
+    /// the header skipped, like the files-backend reader).
+    fn packed_oid(&self, name: &str) -> Option<git_hash::Oid> {
+        let content = std::fs::read_to_string(self.common_dir.join("packed-refs")).ok()?;
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') || line.starts_with('^') {
+                continue;
+            }
+            let mut it = line.splitn(2, ' ');
+            if let (Some(oid_s), Some(nm)) = (it.next(), it.next()) {
+                if nm == name {
+                    return git_hash::Oid::from_hex(oid_s, self.hash_algo).ok();
+                }
+            }
+        }
+        None
     }
 }
