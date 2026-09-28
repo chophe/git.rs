@@ -97,6 +97,33 @@ pub fn should_log_repo(repo: &Repository, refname: &str) -> bool {
     should_log(cfg, refname, repo.bare)
 }
 
+/// Default reflog expiry windows in days, probed against the tree C binary
+/// on 2026-09-28 (research open question O1; `t/` wins ties, but `t/t1410`
+/// only ever passes explicit `--expire`, so the binary + `reflog.h` decide).
+///
+/// Probe: entries dated 100d/40d/20d, reachable vs orphan-tip, run through
+/// `git reflog expire --dry-run --verbose` with defaults and with an
+/// explicit `--expire-unreachable`:
+/// * 100d and 40d entries (reachable or not) prune under defaults, while
+///   20d entries are kept — the TOTAL window is ~30d, matching
+///   `REFLOG_EXPIRE_OPTIONS_INIT` (`now - 30d`), not the documented 90d;
+/// * an explicit `--expire-unreachable` prunes only unreachable entries,
+///   confirming the reachability branch is real.
+///
+/// Note C checks the total window FIRST (`should_expire_reflog_ent`):
+/// anything older than total expires whatever its reachability, so the
+/// 90d unreachable default is masked in practice (an entry old enough for
+/// it already tripped the 30d ceiling). Port the header verbatim — the
+/// future `expire` implementation (plan 01-03) inherits C's exact
+/// semantics, masked branch included.
+///
+/// `gc.reflogExpire` overrides total, `gc.reflogExpireUnreachable`
+/// overrides unreachable (C `reflog_expire_config`).
+pub const DEFAULT_EXPIRE_TOTAL_DAYS: u64 = 30;
+/// See [`DEFAULT_EXPIRE_TOTAL_DAYS`]: masked by the total ceiling, kept for
+/// verbatim parity with `REFLOG_EXPIRE_OPTIONS_INIT`.
+pub const DEFAULT_EXPIRE_UNREACHABLE_DAYS: u64 = 90;
+
 /// One reflog line (C `log_ref_write_fd`): `<old> <new> <committer>` plus a
 /// tab-separated message only when the message is non-empty.
 pub fn format_line(old: &Oid, new: &Oid, committer: &str, message: &str) -> String {
