@@ -36,7 +36,13 @@ Decimal phases appear between their surrounding integers in numeric order.
   2. Concurrent ref updates never tear packed-refs and `update-ref --stdin` applies multi-ref transactions atomically
   3. User can get, set, unset, and list config values across system/global/local/worktree scopes with includes honored
   4. Ported commands produce byte-identical stdout/stderr/exit codes vs C git on the phase's `t/` gates with no scoreboard regression
-**Plans**: TBD
+**Plans**: 4 plans
+
+Plans:
+- [ ] 01-01-PLAN.md — Storage tracer: lock helper, reflog writer, packed write, transaction engine
+- [ ] 01-02-PLAN.md — Config storage: scopes, includeIf, file editor, typed ops
+- [ ] 01-03-PLAN.md — Refs surface: full reflog matrix, update-ref --stdin, writer convergence
+- [ ] 01-04-PLAN.md — Config surface plus gates: command matrix, shim, crosswise, scoreboard
 
 ### Phase 2: Scriptability Layer
 **Goal**: Scripts can rely on full rev-parse resolution and merge-adjacent plumbing
