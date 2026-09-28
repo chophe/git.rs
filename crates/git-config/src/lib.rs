@@ -282,6 +282,110 @@ impl ConfigSet {
         }
         self.set_in(&section, subsection.as_deref(), &key, value);
     }
+
+    /// Load the layered repository scopes in C precedence order
+    /// (`do_git_config_sequence` in `config.c`):
+    ///
+    /// system, XDG user, global user, local (`$COMMONDIR/config`), then the
+    /// worktree file (`$GIT_DIR/config.worktree`, gated — see
+    /// [`worktree_config_enabled`]).
+    ///
+    /// Later scopes win on lookup (via [`ConfigSet::append`]); missing scope
+    /// files mean empty, while corrupt ones return [`ConfigError::BadLine`]
+    /// (fatal 128 at the surface, like C). Each scope file resolves its own
+    /// `[include]` entries; CLI overlays (`GIT_CONFIG_COUNT` pairs, `-c`)
+    /// are applied by the caller afterwards so they always win.
+    pub fn load_repo_scopes(scopes: &RepoScopes) -> Result<ConfigSet, ConfigError> {
+        let mut set = ConfigSet::new();
+        if env_allows_system() {
+            load_scope_into(&mut set, &system_config_path())?;
+        }
+        let (user, xdg) = global_config_paths();
+        if let Some(x) = xdg {
+            load_scope_into(&mut set, &x)?;
+        }
+        if let Some(u) = user {
+            load_scope_into(&mut set, &u)?;
+        }
+        load_scope_into(&mut set, &scopes.commondir.join("config"))?;
+        if worktree_config_enabled(&set) {
+            load_scope_into(&mut set, &scopes.git_dir.join("config.worktree"))?;
+        }
+        Ok(set)
+    }
+}
+
+/// Which on-disk scopes to layer for one repository.
+#[derive(Debug, Clone)]
+pub struct RepoScopes {
+    /// The `.git` directory (locates `config.worktree`).
+    pub git_dir: PathBuf,
+    /// The shared directory (locates `config`).
+    pub commondir: PathBuf,
+    /// Resolved worktree hint for `includeIf "worktree:"` conditions
+    /// (explicit `GIT_WORK_TREE` or the default parent directory; `None`
+    /// when bare). Evaluated by conditional includes (task 2).
+    pub worktree: Option<PathBuf>,
+}
+
+fn env_bool(name: &str, def: bool) -> bool {
+    match std::env::var(name) {
+        Err(_) => def,
+        Ok(v) => parse_bool(&v).unwrap_or(def),
+    }
+}
+
+/// C `git_config_system()`: `GIT_CONFIG_NOSYSTEM` skips the system file.
+fn env_allows_system() -> bool {
+    !env_bool("GIT_CONFIG_NOSYSTEM", false)
+}
+
+/// C `git_system_config()`: `GIT_CONFIG_SYSTEM` overrides the built-in path.
+fn system_config_path() -> PathBuf {
+    std::env::var_os("GIT_CONFIG_SYSTEM")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/etc/gitconfig"))
+}
+
+/// C `git_global_config_paths()`: `GIT_CONFIG_GLOBAL` overrides the user file
+/// (and disables the XDG file); otherwise `~/.gitconfig` plus
+/// `$XDG_CONFIG_HOME/git/config` (or `~/.config/git/config`).
+/// Returns `(user, xdg)` in load order (xdg first, user wins).
+fn global_config_paths() -> (Option<PathBuf>, Option<PathBuf>) {
+    if let Some(g) = std::env::var_os("GIT_CONFIG_GLOBAL") {
+        return (Some(PathBuf::from(g)), None);
+    }
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let user = home.as_ref().map(|h| h.join(".gitconfig"));
+    let xdg = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+        .or_else(|| home.as_ref().map(|h| h.join(".config")))
+        .map(|base| base.join("git/config"));
+    (user, xdg)
+}
+
+/// Whether `$GIT_DIR/config.worktree` applies.
+///
+/// Probed against the tree binary (2.55.0.552): the file is read only when
+/// `extensions.worktreeConfig` parses true **and** `core.repositoryformatversion`
+/// is explicitly present (a config with the flag but no version key ignores
+/// the worktree file). `setup.c` handles `worktreeconfig` even for v0, so no
+/// version-magnitude check — presence is the gate.
+fn worktree_config_enabled(set: &ConfigSet) -> bool {
+    set.get("core", "repositoryformatversion").is_some()
+        && set.get_bool("extensions", "worktreeconfig") == Some(true)
+}
+
+/// Load one scope file: a missing file means empty (C `access_or_die` skip),
+/// a corrupt file is fatal (C `die("bad config line ...")`).
+fn load_scope_into(set: &mut ConfigSet, path: &Path) -> Result<(), ConfigError> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let scope = ConfigSet::from_file(path)?;
+    set.append(scope);
+    Ok(())
 }
 
 /// Split a section header body into section and optional subsection.
@@ -393,9 +497,11 @@ fn unquote_value(value: &str) -> Result<String, ConfigError> {
     Ok(out)
 }
 
-/// Parse a boolean per git's rules.
+/// Parse a boolean per git's rules (case-insensitive, like C
+/// `git_parse_maybe_bool`: `true/yes/on/1` and the empty string are true,
+/// `false/no/off/0` are false).
 pub fn parse_bool(v: &str) -> Option<bool> {
-    match v.trim() {
+    match v.trim().to_ascii_lowercase().as_str() {
         "" | "yes" | "on" | "true" | "1" => Some(true),
         "no" | "off" | "false" | "0" => Some(false),
         _ => None,
@@ -562,6 +668,174 @@ mod tests {
         assert_eq!(format!("{err}"), "bad config line 3");
         let with_file = err.with_file(std::path::PathBuf::from(".git/config"));
         assert_eq!(format!("{with_file}"), "bad config line 3 in file .git/config");
+    }
+
+    // -- scope loader tests (C `do_git_config_sequence` order) --
+
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    struct ScopeLayout {
+        _guard: std::sync::MutexGuard<'static, ()>,
+        dir: PathBuf,
+        git_dir: PathBuf,
+        common_dir: PathBuf,
+        saved: Vec<(String, Option<std::ffi::OsString>)>,
+    }
+
+    /// Build an isolated scope tree and point the scope env vars at it, so
+    /// tests never read the developer's real `~/.gitconfig` or `/etc/gitconfig`.
+    /// Returns the layout; the env guard is held for the test's lifetime.
+    /// Saved vars are restored on drop via `ScopeLayout`'s fields.
+    fn isolated_scopes(tag: &str) -> ScopeLayout {
+        let guard = lock_env();
+        let dir = std::env::temp_dir().join(format!(
+            "git-config-scope-{}-{}-{}",
+            std::process::id(),
+            tag,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let git_dir = dir.join("repo.git");
+        std::fs::create_dir_all(&git_dir).unwrap();
+        // Isolate from ambient config: no system file, temp global/system.
+        let mut saved = Vec::new();
+        for (k, v) in [
+            ("GIT_CONFIG_NOSYSTEM", Some("1")),
+            ("GIT_CONFIG_GLOBAL", None),
+            ("GIT_CONFIG_SYSTEM", None),
+            ("HOME", None),
+        ] {
+            saved.push((k.to_string(), std::env::var_os(k)));
+            match v {
+                Some(val) => std::env::set_var(k, val),
+                None => std::env::remove_var(k),
+            }
+        }
+        // Point global/system at (initially missing) temp files, HOME at dir.
+        std::env::set_var("GIT_CONFIG_GLOBAL", dir.join("global.conf"));
+        std::env::set_var("GIT_CONFIG_SYSTEM", dir.join("system.conf"));
+        std::env::set_var("HOME", &dir);
+        saved.push(("XDG_CONFIG_HOME".to_string(), std::env::var_os("XDG_CONFIG_HOME")));
+        std::env::remove_var("XDG_CONFIG_HOME");
+        ScopeLayout { _guard: guard, dir, git_dir: git_dir.clone(), common_dir: git_dir, saved }
+    }
+
+    impl Drop for ScopeLayout {
+        fn drop(&mut self) {
+            for (k, v) in self.saved.drain(..) {
+                match v {
+                    Some(val) => std::env::set_var(&k, val),
+                    None => std::env::remove_var(&k),
+                }
+            }
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    impl ScopeLayout {
+        fn scopes(&self) -> super::RepoScopes {
+            super::RepoScopes {
+                git_dir: self.git_dir.clone(),
+                commondir: self.common_dir.clone(),
+                worktree: None,
+            }
+        }
+    }
+
+    #[test]
+    fn scope_precedence_local_beats_global_beats_system() {
+        let layout = isolated_scopes("precedence");
+        std::fs::write(layout.dir.join("system.conf"), "[user]\n\tname = sys\n").unwrap();
+        std::fs::write(layout.dir.join("global.conf"), "[user]\n\tname = glob\n").unwrap();
+        std::fs::write(
+            layout.common_dir.join("config"),
+            "[user]\n\tname = local\n",
+        )
+        .unwrap();
+
+        let cfg = ConfigSet::load_repo_scopes(&layout.scopes()).unwrap();
+        assert_eq!(cfg.get("user", "name"), Some("local"));
+
+        // A `-c`-style overlay applied afterwards always wins.
+        let mut with_cli = cfg;
+        with_cli.set_cli("user.name", Some("cli"));
+        assert_eq!(with_cli.get("user", "name"), Some("cli"));
+    }
+
+    #[test]
+    fn scope_falls_back_through_missing_files() {
+        let layout = isolated_scopes("fallback");
+        std::fs::write(layout.dir.join("global.conf"), "[user]\n\tname = glob\n").unwrap();
+        // No system file, no local file: global wins; nothing errors.
+        let cfg = ConfigSet::load_repo_scopes(&layout.scopes()).unwrap();
+        assert_eq!(cfg.get("user", "name"), Some("glob"));
+    }
+
+    #[test]
+    fn worktree_file_gated_on_flag_and_version() {
+        let layout = isolated_scopes("worktree");
+        std::fs::write(
+            layout.git_dir.join("config.worktree"),
+            "[user]\n\temail = wt@example.com\n",
+        )
+        .unwrap();
+
+        // No version key: worktree file invisible even with the flag.
+        std::fs::write(
+            layout.common_dir.join("config"),
+            "[user]\n\tname = local\n[extensions]\n\tworktreeConfig = true\n",
+        )
+        .unwrap();
+        let cfg = ConfigSet::load_repo_scopes(&layout.scopes()).unwrap();
+        assert_eq!(cfg.get("user", "email"), None);
+
+        // Flag without version... same file minus version covered above.
+        // With both: visible (probed C behavior).
+        std::fs::write(
+            layout.common_dir.join("config"),
+            "[core]\n\trepositoryformatversion = 0\n[user]\n\tname = local\n[extensions]\n\tworktreeConfig = true\n",
+        )
+        .unwrap();
+        let cfg = ConfigSet::load_repo_scopes(&layout.scopes()).unwrap();
+        assert_eq!(cfg.get("user", "email"), Some("wt@example.com"));
+
+        // Version but flag off: invisible.
+        std::fs::write(
+            layout.common_dir.join("config"),
+            "[core]\n\trepositoryformatversion = 0\n[user]\n\tname = local\n",
+        )
+        .unwrap();
+        let cfg = ConfigSet::load_repo_scopes(&layout.scopes()).unwrap();
+        assert_eq!(cfg.get("user", "email"), None);
+    }
+
+    #[test]
+    fn corrupt_scope_file_is_badline() {
+        let layout = isolated_scopes("corrupt");
+        std::fs::write(layout.common_dir.join("config"), "[[[oops\n").unwrap();
+        let err = ConfigSet::load_repo_scopes(&layout.scopes()).unwrap_err();
+        assert!(
+            matches!(err, ConfigError::BadLine { line: 1, file: _ }),
+            "unexpected error: {err:?}"
+        );
+        // Renders like C's `fatal: bad config line 1 in file ...` once the
+        // surface adds the `fatal: ` prefix.
+        assert!(format!("{err}").starts_with("bad config line 1 in file "));
+    }
+
+    #[test]
+    fn bool_parsing_is_case_insensitive_like_c() {
+        assert_eq!(super::parse_bool("TRUE"), Some(true));
+        assert_eq!(super::parse_bool("Yes"), Some(true));
+        assert_eq!(super::parse_bool("OFF"), Some(false));
+        assert_eq!(super::parse_bool("maybe"), None);
     }
 }
 

@@ -141,12 +141,27 @@ impl Repository {
         };
         let common_dir = canonicalize_preserve(&common_dir);
 
-        let config_path = common_dir.join("config");
-        let config = match std::fs::read(&config_path) {
-            Ok(data) => ConfigSet::parse(&data).map_err(|e| e.with_file(config_path))?,
-            Err(_) => ConfigSet::new(),
+        let config = {
+            // The worktree hint for conditional includes: explicit override,
+            // else the default parent directory unless the local config marks
+            // the repo bare (C has no worktree then, so `worktree:` matches
+            // nothing). The bare flag itself comes from config, so peek at
+            // the local file directly — a corrupt file still dies below in
+            // the full scope load.
+            let hint = env.work_tree.clone().or_else(|| {
+                if local_core_bare(&common_dir) {
+                    None
+                } else {
+                    git_dir.parent().map(|p| p.to_path_buf())
+                }
+            });
+            let scopes = git_config::RepoScopes {
+                git_dir: git_dir.clone(),
+                commondir: common_dir.clone(),
+                worktree: hint,
+            };
+            git_config::ConfigSet::load_repo_scopes(&scopes)?
         };
-
         let bare = config.get_bool("core", "bare").unwrap_or(false);
         let hash_algo = match config.get("extensions", "objectformat") {
             Some("sha256") => HashAlgorithm::Sha256,
@@ -188,6 +203,17 @@ impl Repository {
         let start = std::env::current_dir().map_err(|e| RepoError::Io(e.to_string()))?;
         Repository::discover_from(&start, &RepoEnv::from_env())
     }
+}
+
+/// Peek at the local config's `core.bare` without include resolution.
+/// Used only to pick the worktree hint before the full scope load; a corrupt
+/// file parses to "not bare" here and still dies C-exactly in the real load.
+fn local_core_bare(common_dir: &Path) -> bool {
+    std::fs::read(common_dir.join("config"))
+        .ok()
+        .and_then(|data| ConfigSet::parse(&data).ok())
+        .and_then(|set| set.get_bool("core", "bare"))
+        .unwrap_or(false)
 }
 
 /// Walk up from `start` looking for a `.git` directory or `gitdir:` file.
@@ -257,6 +283,50 @@ mod tests {
 
     static COUNTER: AtomicU32 = AtomicU32::new(0);
 
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Hold the process-global config env while a test runs and point scope
+    /// resolution at throwaway files, so `discover_from` (which now layers
+    /// system/global scopes like C) never reads the developer's real
+    /// `~/.gitconfig`. Restores the previous env on drop.
+    struct EnvGuard {
+        _guard: std::sync::MutexGuard<'static, ()>,
+        saved: Vec<(String, Option<std::ffi::OsString>)>,
+    }
+
+    impl EnvGuard {
+        fn isolate() -> EnvGuard {
+            let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let dir = std::env::temp_dir().join(format!(
+                "git-core-env-{}-{}",
+                std::process::id(),
+                COUNTER.fetch_add(1, Ordering::SeqCst)
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let mut saved = Vec::new();
+            for key in ["GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "HOME"] {
+                saved.push((key.to_string(), std::env::var_os(key)));
+            }
+            std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");
+            std::env::set_var("GIT_CONFIG_GLOBAL", dir.join("global.conf"));
+            std::env::set_var("GIT_CONFIG_SYSTEM", dir.join("system.conf"));
+            std::env::set_var("HOME", &dir);
+            EnvGuard { _guard: guard, saved }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (k, v) in self.saved.drain(..) {
+                match v {
+                    Some(val) => std::env::set_var(&k, val),
+                    None => std::env::remove_var(&k),
+                }
+            }
+        }
+    }
+
     /// Create a temporary directory unique per test (canonicalized so
     /// comparisons against `Repository` paths are stable on macOS).
     fn tempdir() -> PathBuf {
@@ -276,6 +346,7 @@ mod tests {
 
     #[test]
     fn discovers_git_dir_from_subdir() {
+        let _env = EnvGuard::isolate();
         let base = tempdir();
         let git_dir = init_repo(&base);
         let sub = base.join("a/b/c");
@@ -293,6 +364,7 @@ mod tests {
 
     #[test]
     fn respects_git_dir_env() {
+        let _env = EnvGuard::isolate();
         let base = tempdir();
         let git_dir = init_repo(&base);
         let env = RepoEnv {
@@ -311,6 +383,7 @@ mod tests {
 
     #[test]
     fn reads_config_and_object_format() {
+        let _env = EnvGuard::isolate();
         let base = tempdir();
         let git_dir = init_repo(&base);
         std::fs::write(
@@ -328,6 +401,7 @@ mod tests {
 
     #[test]
     fn gitdir_file_indirection() {
+        let _env = EnvGuard::isolate();
         let base = tempdir();
         let real_git = base.join("real-git");
         std::fs::create_dir_all(real_git.join("objects")).unwrap();
@@ -345,6 +419,7 @@ mod tests {
 
     #[test]
     fn commondir_redirect() {
+        let _env = EnvGuard::isolate();
         let base = tempdir();
         let git_dir = init_repo(&base);
         let common = base.join("shared");
@@ -362,6 +437,7 @@ mod tests {
 
     #[test]
     fn not_a_repository() {
+        let _env = EnvGuard::isolate();
         let base = tempdir();
         let err = Repository::discover_from(&base, &RepoEnv::default()).unwrap_err();
         assert_eq!(err, RepoError::NotFound);
