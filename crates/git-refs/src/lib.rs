@@ -14,9 +14,9 @@ use git_core::Repository;
 use git_hash::{HashAlgorithm, Oid};
 
 pub mod lock;
+pub mod packed;
 pub mod reflog;
-
-use lock::{ensure_within, LockFile};
+pub mod transaction;
 
 const MAX_SYMREF_DEPTH: usize = 10;
 
@@ -30,6 +30,10 @@ pub enum RefError {
     /// detail (naming the lock file); the transaction layer wraps it in
     /// `cannot lock ref` / `update_ref failed for ref` text.
     LockContention(String),
+    /// Transaction rejected: the full C detail (`cannot lock ref ...`,
+    /// `multiple updates ...`, `cannot process ...`); single-ref callers
+    /// add the `update_ref failed for ref` wrapper.
+    Transaction(String),
 }
 
 impl fmt::Display for RefError {
@@ -39,6 +43,7 @@ impl fmt::Display for RefError {
             RefError::InvalidName(n) => write!(f, "invalid ref name '{n}'"),
             RefError::NotFound => write!(f, "ref not found"),
             RefError::LockContention(d) => write!(f, "cannot lock ref: {d}"),
+            RefError::Transaction(d) => write!(f, "{d}"),
         }
     }
 }
@@ -108,35 +113,63 @@ impl RefStore {
         refs
     }
 
-    /// Create or update a ref via the C-exact dot-lock lifecycle
-    /// (create `<ref>.lock`, write plus fsync, atomic rename).
+    /// Create or update a ref through a single-op transaction (C-exact
+    /// dot-lock lifecycle plus old-value/D/F validation; failures carry
+    /// the `update_ref failed for ref` wrapper C's single-ref path emits).
+    /// Deletes take the lock too (contention must fail, never tear).
     pub fn update(&self, name: &str, oid: Option<&Oid>) -> Result<(), RefError> {
-        validate_refname(name)?;
-        let path = self.common_dir.join(name);
+        let mut tx = transaction::Transaction::begin(self);
         match oid {
-            Some(oid) => {
-                if let Some(dir) = path.parent() {
-                    std::fs::create_dir_all(dir).map_err(|e| RefError::Io(e.to_string()))?;
-                }
-                ensure_within(&self.common_dir, &path)?;
-                let mut lock = LockFile::acquire(&path)?;
-                lock.write_and_fsync(format!("{oid}\n").as_bytes())?;
-                lock.commit()?;
-            }
-            None => {
-                ensure_within(&self.common_dir, &path)?;
-                // Deletes take the lock too (contention must fail, never tear).
-                match LockFile::acquire(&path) {
-                    Ok(lock) => {
-                        let _ = std::fs::remove_file(&path);
-                        lock.rollback();
-                    }
-                    Err(RefError::LockContention(d)) => return Err(RefError::LockContention(d)),
-                    Err(e) => return Err(e),
-                }
-            }
+            Some(new) => tx.queue(transaction::TxnOp::Set {
+                name: name.to_string(),
+                new: *new,
+                old: None,
+                deref: false,
+            }),
+            None => tx.queue(transaction::TxnOp::Delete {
+                name: name.to_string(),
+                old: None,
+                deref: false,
+            }),
         }
-        Ok(())
+        tx.prepare().map_err(|e| self.wrap_single(name, e))?;
+        tx.commit().map_err(|e| self.wrap_single(name, e))
+    }
+
+    /// Add C's single-ref `update_ref failed for ref '<name>': ...` wrapper
+    /// (C `refs_update_ref`, DIE_ON_ERR for the `update-ref` builtin).
+    fn wrap_single(&self, name: &str, e: RefError) -> RefError {
+        match e {
+            RefError::Transaction(d) => {
+                RefError::Transaction(format!("update_ref failed for ref '{name}': {d}"))
+            }
+            other => RefError::Transaction(format!(
+                "update_ref failed for ref '{name}': cannot lock ref '{name}': {other}"
+            )),
+        }
+    }
+
+    /// Loose-ref path for `name` (always under the common dir, like C).
+    pub(crate) fn loose_path(&self, name: &str) -> PathBuf {
+        self.common_dir.join(name)
+    }
+
+    /// The common dir (transaction escape checks anchor here).
+    pub(crate) fn common_path(&self) -> &Path {
+        &self.common_dir
+    }
+
+    /// Raw loose content without symref following (transaction layer).
+    pub(crate) fn read_raw(&self, name: &str) -> Option<transaction::RawRef> {
+        match self.read_loose(name)? {
+            RefTarget::Oid(oid) => Some(transaction::RawRef::Oid(oid)),
+            RefTarget::SymRef(t) => Some(transaction::RawRef::Symref(t)),
+        }
+    }
+
+    /// Packed fallback for the transaction's under-lock read.
+    pub(crate) fn packed_oid(&self, name: &str) -> Option<Oid> {
+        self.packed()?.get(name).copied()
     }
 
     /// Read a loose ref file (oid or symref).
@@ -200,9 +233,15 @@ impl RefStore {
     }
 }
 
-/// Validate a ref name against git's rules (subset).
+/// Validate a ref name against git's rules: `HEAD` plus the `refs/`
+/// hierarchy (C one-level rule: no other bare single-component names),
+/// never a bare `@` (C bare-at rule), never `@{`, `.lock`, or reflog-suffix
+/// shapes, plus the component character rules.
 pub fn validate_refname(name: &str) -> Result<(), RefError> {
-    if !name.starts_with("refs/") {
+    if name == "@" {
+        return Err(RefError::InvalidName(name.to_string()));
+    }
+    if name != "HEAD" && !name.starts_with("refs/") {
         return Err(RefError::InvalidName(name.to_string()));
     }
     if name.contains("..")
@@ -301,6 +340,8 @@ mod tests {
     fn validates_names() {
         assert!(validate_refname("refs/heads/main").is_ok());
         assert!(validate_refname("refs/heads/feature/x").is_ok());
+        assert!(validate_refname("HEAD").is_ok());
+        assert!(validate_refname("@").is_err());
         assert!(validate_refname("refs/heads/main..evil").is_err());
         assert!(validate_refname("refs/heads/").is_err());
         assert!(validate_refname("main").is_err());

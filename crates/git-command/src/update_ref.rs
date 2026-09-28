@@ -37,7 +37,7 @@ impl Command for UpdateRef {
             }
             store
                 .update(&rest[0], None)
-                .map_err(|e| CommandError::fatal(e.to_string()))?;
+                .map_err(|e| CommandError::fatal(format!("fatal: {e}")))?;
             return Ok(());
         }
 
@@ -48,7 +48,7 @@ impl Command for UpdateRef {
             .map_err(|_| CommandError::error(format!("invalid object name '{}'", rest[1])))?;
         store
             .update(&rest[0], Some(&oid))
-            .map_err(|e| CommandError::fatal(e.to_string()))?;
+            .map_err(|e| CommandError::fatal(format!("fatal: {e}")))?;
         Ok(())
     }
 }
