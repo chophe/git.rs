@@ -16,7 +16,7 @@ use crate::{Command, CommandError, RepoContext};
 use git_diff::tree::compare_trees;
 use git_hash::{HashAlgorithm, Oid};
 use git_index::Index;
-use git_object::{Object, ObjectKind};
+use git_object::{parse_commit, Object, ObjectKind};
 use git_odb::{LooseStore, Odb};
 use git_refs::RefStore;
 
@@ -173,9 +173,6 @@ impl Command for Commit {
 
     fn run(&self, ctx: &RepoContext, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
         let a = Args::parse(args)?;
-        if !a.paths.is_empty() {
-            return Err(CommandError::fatal("fatal: partial commit (pathspecs) is not supported yet"));
-        }
 
         let repo = ctx.repository()?;
         let algo = repo.hash_algo;
@@ -195,6 +192,16 @@ impl Command for Commit {
         if a.all {
             let mut sink: Vec<u8> = Vec::new();
             crate::add::Add.run(ctx, &["-u".to_string()], &mut sink)?;
+            index = Index::read(&repo.index_file(), algo).unwrap_or_default();
+        }
+
+        // Pathspec form (`commit [<options>] [--] <pathspec>...`): stage
+        // the listed paths from the worktree, then commit normally. This
+        // matches C exactly when the index holds no staged changes outside
+        // the pathspec (the `t/`-gated case); otherwise refuse rather than
+        // silently committing foreign staged content.
+        if !a.paths.is_empty() {
+            stage_pathspec(ctx, &repo, &odb, &a.paths, &index)?;
             index = Index::read(&repo.index_file(), algo).unwrap_or_default();
         }
 
@@ -636,6 +643,93 @@ fn blob_change_counts(odb: &Odb, old: &Oid, new: &Oid) -> (usize, usize) {
     let ins = ops.iter().filter(|o| **o == git_diff::myers::Op::Insert).count();
     let del = ops.iter().filter(|o| **o == git_diff::myers::Op::Delete).count();
     (ins, del)
+}
+
+/// Stage a commit pathspec from the worktree, then let the normal full
+/// commit proceed. Matches C exactly when the index holds no staged
+/// changes outside the pathspec; otherwise refuse rather than silently
+/// committing foreign staged content.
+fn stage_pathspec(
+    ctx: &RepoContext,
+    repo: &git_core::Repository,
+    odb: &Odb,
+    paths: &[String],
+    index: &Index,
+) -> Result<(), CommandError> {
+    let work_tree = repo
+        .work_tree
+        .clone()
+        .ok_or_else(|| CommandError::fatal("fatal: this operation must be run in a work tree"))?;
+    let algo = repo.hash_algo;
+    // HEAD tree for the staged-outside check.
+    let head_map = match repo.resolve_head() {
+        Some(h) => odb
+            .read(&h)
+            .ok()
+            .and_then(|o| {
+                if o.kind != ObjectKind::Commit {
+                    return None;
+                }
+                parse_commit(&o.data, algo).ok()
+            })
+            .and_then(|c| crate::checkout_core::tree_to_map(odb, algo, &c.tree).ok())
+            .unwrap_or_default(),
+        None => crate::checkout_core::TreeMap::new(),
+    };
+    // Refuse when anything outside the pathspec is staged.
+    let mut idx_map: std::collections::BTreeMap<&str, (u32, git_hash::Oid)> =
+        std::collections::BTreeMap::new();
+    for e in &index.entries {
+        if e.stage == 0 {
+            idx_map.insert(e.name.as_str(), (e.mode, e.oid));
+        }
+    }
+    let mut all_paths: Vec<&str> = idx_map.keys().copied().collect();
+    for p in head_map.keys() {
+        if !idx_map.contains_key(p.as_str()) {
+            all_paths.push(p.as_str());
+        }
+    }
+    for p in all_paths {
+        if paths.iter().any(|s| crate::checkout_core::spec_matches(s, p)) {
+            continue;
+        }
+        let in_idx = idx_map.get(p);
+        let in_head = head_map.get(p).map(|b| (b.mode, b.oid));
+        if in_idx != in_head.as_ref() {
+            return Err(CommandError::fatal(
+                "fatal: partial commit (pathspecs) is not supported yet",
+            ));
+        }
+    }
+    // Stage the listed paths from the worktree (additions/modifications
+    // via `add`, deletions by dropping the index entries).
+    for spec in paths {
+        let full = work_tree.join(spec);
+        match std::fs::symlink_metadata(&full) {
+            Ok(md)
+                if md.file_type().is_dir()
+                    || md.file_type().is_file()
+                    || md.file_type().is_symlink() =>
+            {
+                let mut sink: Vec<u8> = Vec::new();
+                crate::add::Add.run(ctx, &[spec.clone()], &mut sink)?;
+            }
+            _ => {
+                let mut idx = Index::read(&repo.index_file(), algo).unwrap_or_default();
+                let before = idx.entries.len();
+                idx.entries.retain(|e| !crate::checkout_core::spec_matches(spec, &e.name));
+                let head_hit = head_map.keys().any(|p| crate::checkout_core::spec_matches(spec, p));
+                if idx.entries.len() == before && !head_hit {
+                    return Err(CommandError::error(format!(
+                        "error: pathspec '{spec}' did not match any file(s) known to git"
+                    )));
+                }
+                crate::checkout_core::write_index(repo, &idx)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn short_branch(refname: &str) -> String {
