@@ -222,6 +222,18 @@ impl<'a> Transaction<'a> {
                 return Err(self.df_error(&op, &target, &e));
             }
         }
+        // A stale empty directory at the target (leftover from a deleted
+        // `foo/bar` ref) is removed so `foo` can be created; C moves such
+        // dirs out of the way, which is observationally identical when
+        // they hold no entries (`t/t1410` "stale dirs").
+        if path.is_dir() {
+            let empty = std::fs::read_dir(&path)
+                .map(|mut rd| rd.next().is_none())
+                .unwrap_or(false);
+            if empty {
+                let _ = std::fs::remove_dir(&path);
+            }
+        }
         ensure_within(self.store.common_path(), &path).map_err(|e| self.wrap_update(&op, e))?;
 
         let lock = match LockFile::acquire(&path) {
