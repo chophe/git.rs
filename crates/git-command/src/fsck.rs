@@ -42,62 +42,28 @@ impl Command for Fsck {
             }
         }
 
-        while let Some((oid, typ)) = queue.pop() {
-            if reachable.contains(&oid) {
-                continue;
-            }
-            if !odb.contains(&oid) {
-                writeln!(out, "missing {typ} {oid}").map_err(|e| CommandError::fatal(e.to_string()))?;
-                errors = true;
-                continue;
-            }
-            let obj = match odb.read(&oid) {
-                Ok(o) => o,
-                Err(_) => {
-                    writeln!(out, "error: bad object {oid}").map_err(|e| CommandError::fatal(e.to_string()))?;
-                    errors = true;
-                    continue;
-                }
-            };
-            reachable.insert(oid);
-            match obj.kind {
-                git_object::ObjectKind::Commit => match parse_commit(&obj.data, algo) {
-                    Ok(c) => {
-                        queue.push((c.tree, "tree"));
-                        for p in c.parents {
-                            queue.push((p, "commit"));
-                        }
-                    }
-                    Err(_) => {
-                        writeln!(out, "error: corrupt commit {oid}").map_err(|e| CommandError::fatal(e.to_string()))?;
-                        errors = true;
-                    }
-                },
-                git_object::ObjectKind::Tree => match parse_tree(&obj.data, algo) {
-                    Ok(entries) => {
-                        for e in entries {
-                            if e.mode == "160000" {
-                                continue; // gitlink
-                            }
-                            let t = if e.is_dir() { "tree" } else { "blob" };
-                            queue.push((e.oid, t));
-                        }
-                    }
-                    Err(_) => {
-                        writeln!(out, "error: corrupt tree {oid}").map_err(|e| CommandError::fatal(e.to_string()))?;
-                        errors = true;
-                    }
-                },
-                git_object::ObjectKind::Tag => match parse_tag(&obj.data, algo) {
-                    Ok(t) => queue.push((t.object, t.kind.as_str())),
-                    Err(_) => {
-                        writeln!(out, "error: corrupt tag {oid}").map_err(|e| CommandError::fatal(e.to_string()))?;
-                        errors = true;
-                    }
-                },
-                git_object::ObjectKind::Blob => {}
+        walk_queue(&odb, algo, out, &mut errors, &mut reachable, &mut queue);
+
+        // C `fsck --full` also verifies the connectivity of every present
+        // object (unreachable commits' trees included), so a blob missing
+        // from an unreachable tree still reports `missing blob` (t/t1410
+        // "corrupt and check" after `reset --hard` orphaned the referrer).
+        // A separate visited set keeps the dangling computation intact.
+        let mut seen = reachable.clone();
+        let mut queue2: Vec<(Oid, &'static str)> = Vec::new();
+        for oid in odb.loose.iter_oids() {
+            if !seen.contains(&oid) {
+                queue2.push((oid, "commit"));
             }
         }
+        for (_pf, idx) in &odb.packs {
+            for oid in idx.oids() {
+                if !seen.contains(oid) {
+                    queue2.push((oid.clone(), "commit"));
+                }
+            }
+        }
+        walk_queue(&odb, algo, out, &mut errors, &mut seen, &mut queue2);
 
         // Dangling: present but unreachable objects (sorted by type, then oid).
         let mut all: Vec<Oid> = odb.loose.iter_oids();
@@ -125,6 +91,74 @@ impl Command for Fsck {
             Err(CommandError::silent(2))
         } else {
             Ok(())
+        }
+    }
+}
+
+/// Drain `queue`, reporting missing/corrupt objects and queuing children
+/// with their expected types. Visited oids accumulate in `seen`.
+fn walk_queue(
+    odb: &Odb,
+    algo: git_hash::HashAlgorithm,
+    out: &mut dyn Write,
+    errors: &mut bool,
+    seen: &mut HashSet<Oid>,
+    queue: &mut Vec<(Oid, &'static str)>,
+) {
+    while let Some((oid, typ)) = queue.pop() {
+        if seen.contains(&oid) {
+            continue;
+        }
+        if !odb.contains(&oid) {
+            writeln!(out, "missing {typ} {oid}").map_err(|e| CommandError::fatal(e.to_string())).ok();
+            *errors = true;
+            continue;
+        }
+        let obj = match odb.read(&oid) {
+            Ok(o) => o,
+            Err(_) => {
+                writeln!(out, "error: bad object {oid}").map_err(|e| CommandError::fatal(e.to_string())).ok();
+                *errors = true;
+                continue;
+            }
+        };
+        seen.insert(oid);
+        match obj.kind {
+            git_object::ObjectKind::Commit => match parse_commit(&obj.data, algo) {
+                Ok(c) => {
+                    queue.push((c.tree, "tree"));
+                    for p in c.parents {
+                        queue.push((p, "commit"));
+                    }
+                }
+                Err(_) => {
+                    writeln!(out, "error: corrupt commit {oid}").map_err(|e| CommandError::fatal(e.to_string())).ok();
+                    *errors = true;
+                }
+            },
+            git_object::ObjectKind::Tree => match parse_tree(&obj.data, algo) {
+                Ok(entries) => {
+                    for e in entries {
+                        if e.mode == "160000" {
+                            continue; // gitlink
+                        }
+                        let t = if e.is_dir() { "tree" } else { "blob" };
+                        queue.push((e.oid, t));
+                    }
+                }
+                Err(_) => {
+                    writeln!(out, "error: corrupt tree {oid}").map_err(|e| CommandError::fatal(e.to_string())).ok();
+                    *errors = true;
+                }
+            },
+            git_object::ObjectKind::Tag => match parse_tag(&obj.data, algo) {
+                Ok(t) => queue.push((t.object, t.kind.as_str())),
+                Err(_) => {
+                    writeln!(out, "error: corrupt tag {oid}").map_err(|e| CommandError::fatal(e.to_string())).ok();
+                    *errors = true;
+                }
+            },
+            git_object::ObjectKind::Blob => {}
         }
     }
 }
