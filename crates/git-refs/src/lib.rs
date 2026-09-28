@@ -154,8 +154,15 @@ impl RefStore {
         self.common_dir.join(name)
     }
 
-    /// The common dir (transaction escape checks anchor here).
+    /// The common dir (transaction escape checks and the expire ref lock
+    /// anchor here).
     pub(crate) fn common_path(&self) -> &Path {
+        &self.common_dir
+    }
+
+    /// The common dir, for command-layer locks that must live next to the
+    /// ref files (e.g. the `reflog expire` ref lock, C `lock_ref_oid_basic`).
+    pub fn common_dir(&self) -> &Path {
         &self.common_dir
     }
 
