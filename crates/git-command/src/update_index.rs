@@ -18,11 +18,15 @@ impl Command for UpdateIndex {
     fn run(&self, ctx: &RepoContext, args: &[String], _out: &mut dyn Write) -> Result<(), CommandError> {
         let mut add = false;
         let mut remove = false;
+        let mut chmod: Option<bool> = None;
         let mut paths: Vec<String> = Vec::new();
         let mut after_dashdash = false;
-        for a in args {
+        let mut i = 0usize;
+        while i < args.len() {
+            let a = &args[i];
             if after_dashdash {
                 paths.push(a.clone());
+                i += 1;
                 continue;
             }
             match a.as_str() {
@@ -30,11 +34,22 @@ impl Command for UpdateIndex {
                 "--remove" => remove = true,
                 "--" => after_dashdash = true,
                 "--refresh" | "-q" | "--again" => {}
+                s if s.starts_with("--chmod=") => {
+                    chmod = Some(parse_chmod(&s["--chmod=".len()..])?);
+                }
+                "--chmod" => {
+                    i += 1;
+                    let v = args
+                        .get(i)
+                        .ok_or_else(|| CommandError::usage("error: option 'chmod' requires a value"))?;
+                    chmod = Some(parse_chmod(v)?);
+                }
                 s if s.starts_with('-') && s.len() > 1 => {
                     return Err(CommandError::usage(format!("update-index: option '{s}' not supported")));
                 }
                 s => paths.push(s.to_string()),
             }
+            i += 1;
         }
         if paths.is_empty() {
             return Err(CommandError::usage("update-index: no paths given"));
@@ -52,6 +67,20 @@ impl Command for UpdateIndex {
             .unwrap_or(Index { version: 2, entries: vec![], cache_tree: None });
 
         for path in &paths {
+            if let Some(exec) = chmod {
+                // Mode-only flip (C `chmod_pathspec`): regular files
+                // toggle 100644/100755; anything else is left alone.
+                let entry = index.entries.iter_mut().find(|e| e.name == *path).ok_or_else(|| {
+                    eprintln!("error: {path}: does not exist and --remove not passed");
+                    CommandError::fatal(format!("fatal: Unable to process path {path}"))
+                })?;
+                if exec && entry.mode == 0o100644 {
+                    entry.mode = 0o100755;
+                } else if !exec && entry.mode == 0o100755 {
+                    entry.mode = 0o100644;
+                }
+                continue;
+            }
             let full = work_tree.join(path);
             if full.is_file() {
                 if !add && !index.entries.iter().any(|e| e.name == *path) {
@@ -92,5 +121,14 @@ impl Command for UpdateIndex {
         index.entries.sort_by(|a, b| a.name.cmp(&b.name));
         index.write(&repo.index_file(), algo).map_err(|e| CommandError::fatal(e.to_string()))?;
         Ok(())
+    }
+}
+
+/// Parse a `--chmod` value (C: only `+x` / `-x`).
+fn parse_chmod(v: &str) -> Result<bool, CommandError> {
+    match v {
+        "+x" => Ok(true),
+        "-x" => Ok(false),
+        _ => Err(CommandError::usage("error: option 'chmod' expects \"+x\" or \"-x\"")),
     }
 }
