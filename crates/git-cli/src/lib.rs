@@ -7,6 +7,26 @@ use std::rc::Rc;
 /// port is based on.
 pub const VERSION: &str = "2.55.0-540";
 
+/// `git version --build-options`: the C-shaped capability block. Only the
+/// keys the `t/` harness consumes (`default-hash`, `default-ref-format`,
+/// `sizeof-*`, feature probes) are load-bearing; the rest mirror C's
+/// `builtin/version.c` shape so prereq probes behave.
+fn print_build_options() {
+    println!("git version {VERSION}");
+    println!("cpu: {}", std::env::consts::ARCH);
+    println!("sizeof-long: {}", std::mem::size_of::<std::ffi::c_long>());
+    println!("sizeof-size_t: {}", std::mem::size_of::<usize>());
+    println!("shell-path: /bin/sh");
+    println!("rust: enabled");
+    println!("gettext: disabled");
+    println!("libcurl: disabled");
+    println!("zlib: enabled");
+    println!("SHA-1: SHA1_DC");
+    println!("SHA-256: SHA256_BLK");
+    println!("default-ref-format: files");
+    println!("default-hash: sha1");
+}
+
 /// Exit code for usage errors, matching C git (129).
 pub const EXIT_USAGE: i32 = 129;
 
@@ -60,7 +80,11 @@ where
             EXIT_USAGE
         }
         Some("-v") | Some("--version") | Some("version") => {
-            println!("git version {VERSION}");
+            if args.iter().skip(2).any(|a| a == "--build-options") {
+                print_build_options();
+            } else {
+                println!("git version {VERSION}");
+            }
             0
         }
         Some("--exec-path") => {
