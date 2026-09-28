@@ -38,6 +38,7 @@ pub mod pack_objects;
 pub mod show;
 pub mod patch;
 pub mod read_tree;
+pub mod reflog;
 pub mod reset;
 pub mod restore;
 pub mod rev_list;
@@ -412,6 +413,7 @@ pub fn dispatch_with(
         "for-each-ref" => &show_ref::ForEachRef,
         "update-ref" => &update_ref::UpdateRef,
         "symbolic-ref" => &update_ref::SymbolicRef,
+        "reflog" => &reflog::Reflog,
         "branch" => &show_ref::Branch,
         "merge-base" => &merge_base::MergeBase,
         "merge-file" => &merge_file::MergeFile,

@@ -13,6 +13,11 @@ use std::path::{Path, PathBuf};
 use git_core::Repository;
 use git_hash::{HashAlgorithm, Oid};
 
+pub mod lock;
+pub mod reflog;
+
+use lock::{ensure_within, LockFile};
+
 const MAX_SYMREF_DEPTH: usize = 10;
 
 /// Errors from ref operations.
@@ -21,6 +26,10 @@ pub enum RefError {
     Io(String),
     InvalidName(String),
     NotFound,
+    /// Lock creation failed: carries C's `Unable to create '<lock>': ...`
+    /// detail (naming the lock file); the transaction layer wraps it in
+    /// `cannot lock ref` / `update_ref failed for ref` text.
+    LockContention(String),
 }
 
 impl fmt::Display for RefError {
@@ -29,6 +38,7 @@ impl fmt::Display for RefError {
             RefError::Io(e) => write!(f, "ref I/O error: {e}"),
             RefError::InvalidName(n) => write!(f, "invalid ref name '{n}'"),
             RefError::NotFound => write!(f, "ref not found"),
+            RefError::LockContention(d) => write!(f, "cannot lock ref: {d}"),
         }
     }
 }
@@ -98,7 +108,8 @@ impl RefStore {
         refs
     }
 
-    /// Create or update a ref (atomic: temp file + rename).
+    /// Create or update a ref via the C-exact dot-lock lifecycle
+    /// (create `<ref>.lock`, write plus fsync, atomic rename).
     pub fn update(&self, name: &str, oid: Option<&Oid>) -> Result<(), RefError> {
         validate_refname(name)?;
         let path = self.common_dir.join(name);
@@ -107,13 +118,22 @@ impl RefStore {
                 if let Some(dir) = path.parent() {
                     std::fs::create_dir_all(dir).map_err(|e| RefError::Io(e.to_string()))?;
                 }
-                let tmp = path.with_extension(format!("lock.{}", std::process::id()));
-                std::fs::write(&tmp, format!("{oid}\n"))
-                    .map_err(|e| RefError::Io(e.to_string()))?;
-                std::fs::rename(&tmp, &path).map_err(|e| RefError::Io(e.to_string()))?;
+                ensure_within(&self.common_dir, &path)?;
+                let mut lock = LockFile::acquire(&path)?;
+                lock.write_and_fsync(format!("{oid}\n").as_bytes())?;
+                lock.commit()?;
             }
             None => {
-                let _ = std::fs::remove_file(&path);
+                ensure_within(&self.common_dir, &path)?;
+                // Deletes take the lock too (contention must fail, never tear).
+                match LockFile::acquire(&path) {
+                    Ok(lock) => {
+                        let _ = std::fs::remove_file(&path);
+                        lock.rollback();
+                    }
+                    Err(RefError::LockContention(d)) => return Err(RefError::LockContention(d)),
+                    Err(e) => return Err(e),
+                }
             }
         }
         Ok(())
