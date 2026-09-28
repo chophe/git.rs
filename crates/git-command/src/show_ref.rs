@@ -116,7 +116,6 @@ impl Command for Branch {
     fn run(&self, ctx: &RepoContext, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
         let repo = ctx.repository()?;
         let store = git_refs::RefStore::from_repo(&repo);
-        let algo = repo.hash_algo;
 
         let mut delete = false;
         let mut rest: Vec<String> = Vec::new();
@@ -137,14 +136,27 @@ impl Command for Branch {
             }
             let name = rest[0].trim_start_matches("refs/heads/").to_string();
             let full = format!("refs/heads/{name}");
-            // Refuse to delete the checked-out branch.
+            // Refuse to delete the checked-out branch (C
+            // `delete_branches` worktree check).
             if store.head_symbolic_target().as_deref() == Some(full.as_str()) {
+                let wt = repo
+                    .work_tree
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| repo.git_dir.display().to_string());
                 return Err(CommandError::error(format!(
-                    "error: cannot delete branch '{name}' used by worktree"
+                    "error: cannot delete branch '{name}' used by worktree at '{wt}'"
                 )));
             }
+            let old = store.resolve(&full).ok_or_else(|| {
+                CommandError::error(format!("error: branch '{name}' not found"))
+            })?;
             store
                 .update(&full, None)
+                .map_err(|e| CommandError::fatal(format!("fatal: {e}")))?;
+            // Deleting a ref removes its reflog (C `refs_delete_ref`).
+            git_refs::reflog::remove_log(&repo.git_dir, &full);
+            writeln!(out, "Deleted branch {name} (was {}).", crate::checkout_core::short_oid(&repo, &old))
                 .map_err(|e| CommandError::fatal(e.to_string()))?;
             return Ok(());
         }
@@ -152,16 +164,39 @@ impl Command for Branch {
         if rest.is_empty() {
             return list_short(ctx, out, "refs/heads/", true);
         }
-        if rest.len() != 1 {
+        if rest.len() > 2 {
             return Err(CommandError::usage("branch: too many arguments"));
         }
-        // Create: refs/heads/<name> at HEAD.
-        let head = repo.resolve_head().ok_or_else(|| CommandError::error("not a valid object name: 'HEAD'"))?;
+        // Create: refs/heads/<name> at the start point (default HEAD).
+        let (start_rev, start_display) = match rest.get(1) {
+            Some(s) => (s.clone(), s.clone()),
+            None => (
+                "HEAD".to_string(),
+                match store.head_symbolic_target() {
+                    Some(t) => t.strip_prefix("refs/heads/").unwrap_or(&t).to_string(),
+                    None => "HEAD".to_string(),
+                },
+            ),
+        };
+        let target = crate::resolve_arg(&repo, &start_rev)?;
         let name = rest[0].trim_start_matches("refs/heads/").to_string();
+        let full = format!("refs/heads/{name}");
+        if git_refs::validate_refname(&full).is_err() {
+            return Err(CommandError::fatal(format!(
+                "fatal: '{name}' is not a valid branch name\nhint: See 'git help check-ref-format'\nhint: Disable this message with \"git config set advice.refSyntax false\""
+            )));
+        }
+        if store.resolve(&full).is_some() {
+            return Err(CommandError::fatal(format!("fatal: a branch named '{name}' already exists")));
+        }
+        let old = store.resolve(&full).unwrap_or(*repo.hash_algo.null_oid());
         store
-            .update(&format!("refs/heads/{name}"), Some(&head))
-            .map_err(|e| CommandError::fatal(e.to_string()))?;
-        let _ = algo;
+            .update(&full, Some(&target))
+            .map_err(|e| CommandError::fatal(format!("fatal: {e}")))?;
+        let msg = format!("branch: Created from {start_display}");
+        if let Ok(ident) = crate::checkout_core::committer_ident(&repo) {
+            git_refs::reflog::log_update(&repo, &full, &old, &target, &ident, &msg);
+        }
         Ok(())
     }
 }
