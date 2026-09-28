@@ -9,6 +9,8 @@ use std::error::Error;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+pub mod file;
+
 /// A single configuration entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigEntry {
@@ -53,6 +55,12 @@ pub enum ConfigError {
     /// A malformed line (e.g. a section header without a closing bracket),
     /// mirroring C git's `fatal: bad config line N [in file F]`.
     BadLine { line: usize, file: Option<PathBuf> },
+    /// A value rejected by `--type=` canonicalization, with C's exact text
+    /// (e.g. `bad boolean config value 'maybe' for 'a.b'`).
+    BadValue(String),
+    /// A scope file that could not be locked for writing
+    /// (C `could not lock config file %s`).
+    LockDenied(PathBuf),
 }
 
 impl fmt::Display for ConfigError {
@@ -80,6 +88,8 @@ impl fmt::Display for ConfigError {
                 }
                 Ok(())
             }
+            ConfigError::BadValue(msg) => write!(f, "{msg}"),
+            ConfigError::LockDenied(p) => write!(f, "could not lock config file {}", p.display()),
         }
     }
 }
@@ -1008,6 +1018,115 @@ pub fn parse_bool(v: &str) -> Option<bool> {
     }
 }
 
+/// Value types for `--type=` canonicalization (C `builtin/config.c`
+/// `option_parse_type` + `normalize_value`), shared by all display and
+/// storage paths so later subcommands never branch per flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigValueType {
+    Bool,
+    Int,
+    BoolOrInt,
+    Path,
+    ExpiryDate,
+}
+
+/// Canonicalize a value for storage/display per its `--type=` (C
+/// `normalize_value`): bools become `true`/`false`, ints become decimal
+/// (with `k`/`m`/`g` suffixes honored), bool-or-int picks the matching form,
+/// paths and expiry dates are stored as-is (paths expand on read).
+/// Reuses [`parse_bool`] and [`expand_path`] semantics instead of branching
+/// per future subcommand. Errors carry C's exact `die` text.
+pub fn canonicalize_typed(ty: ConfigValueType, key: &str, value: &str) -> Result<String, ConfigError> {
+    match ty {
+        ConfigValueType::Bool => parse_bool(value)
+            .map(|b| b.to_string())
+            .ok_or_else(|| ConfigError::BadValue(format!("bad boolean config value '{value}' for '{key}'"))),
+        ConfigValueType::Int => parse_git_int(value, i64::MAX as i128)
+            .map(|n| n.to_string())
+            .map_err(|e| numeric_error(key, value, e)),
+        ConfigValueType::BoolOrInt => {
+            if let Some(b) = parse_bool(value) {
+                return Ok(b.to_string());
+            }
+            parse_git_int(value, i32::MAX as i128)
+                .map(|n| n.to_string())
+                .map_err(|e| numeric_error(key, value, e))
+        }
+        ConfigValueType::Path | ConfigValueType::ExpiryDate => Ok(value.to_string()),
+    }
+}
+
+fn numeric_error(key: &str, value: &str, err: GitIntError) -> ConfigError {
+    let reason = match err {
+        GitIntError::OutOfRange => "out of range",
+        GitIntError::Invalid => "invalid unit",
+    };
+    ConfigError::BadValue(format!("bad numeric config value '{value}' for '{key}': {reason}"))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GitIntError {
+    Invalid,
+    OutOfRange,
+}
+
+/// Parse an integer per C `git_parse_signed` (`strtoimax` base 0, so `0x`
+/// hex and leading-`0` octal work) with one optional `k`/`m`/`g` suffix
+/// (case-insensitive, 1024-based). Range-checked against `max` (and
+/// `-(max+1)` below, like C's asymmetric bound).
+fn parse_git_int(value: &str, max: i128) -> Result<i128, GitIntError> {
+    use std::num::IntErrorKind;
+    let s = value.trim_start_matches(|c: char| c.is_ascii_whitespace());
+    let (neg, rest) = match s.strip_prefix('-') {
+        Some(r) => (true, r),
+        None => (false, s.strip_prefix('+').unwrap_or(s)),
+    };
+    let (base, digits) = if rest.starts_with("0x") || rest.starts_with("0X") {
+        (16u32, &rest[2..])
+    } else if rest.len() > 1 && rest.starts_with('0') {
+        (8u32, rest)
+    } else {
+        (10u32, rest)
+    };
+    // Maximal valid-digit run; anything after must be the unit suffix.
+    let run_len = digits
+        .bytes()
+        .take_while(|b| (*b as char).is_digit(base))
+        .count();
+    let (num_text, suffix) = digits.split_at(run_len);
+    if num_text.is_empty() {
+        return Err(GitIntError::Invalid);
+    }
+    let factor: i128 = match suffix.to_ascii_lowercase().as_str() {
+        "" => 1,
+        "k" => 1024,
+        "m" => 1024 * 1024,
+        "g" => 1024 * 1024 * 1024,
+        _ => return Err(GitIntError::Invalid),
+    };
+    let magnitude = match i128::from_str_radix(num_text, base) {
+        Ok(n) => n,
+        Err(e) => {
+            return Err(match e.kind() {
+                IntErrorKind::PosOverflow => GitIntError::OutOfRange,
+                _ => GitIntError::Invalid,
+            });
+        }
+    };
+    let scaled = magnitude.saturating_mul(factor);
+    if neg {
+        if scaled > max + 1 {
+            return Err(GitIntError::OutOfRange);
+        }
+        Ok(-scaled)
+    } else {
+        if scaled > max {
+            return Err(GitIntError::OutOfRange);
+        }
+        Ok(scaled)
+    }
+}
+
 /// Expand `~`/`~/...` and `$HOME`/`${HOME}` in a path, resolving relative to
 /// `base` otherwise.
 fn expand_path(value: &str, base: Option<&Path>) -> PathBuf {
@@ -1700,6 +1819,9 @@ mod tests {
 mod props {
     use super::ConfigSet;
     use proptest::prelude::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static FILE_N: AtomicU32 = AtomicU32::new(0);
 
     proptest! {
         /// Parsing arbitrary bytes must never panic (it either parses or
@@ -1715,6 +1837,49 @@ mod props {
             let text = format!("[{section}]\n\t{key} = {value}\n");
             let cfg = ConfigSet::parse(text.as_bytes()).unwrap();
             prop_assert_eq!(cfg.get(&section, &key), Some(value.as_str()));
+        }
+
+        /// Editing arbitrary text must never panic; when the input parses,
+        /// the edited output parses too (the splicer only swaps key lines
+        /// for canonical ones and appends canonical sections).
+        #[test]
+        fn file_edit_never_panics(text: String, key in "[a-z]{1,8}", value in "[a-z0-9 ;#]{0,12}") {
+            let edited = super::file::set_value(&text, "s", None, &key, &value)
+                .unwrap_or_else(|_| text.clone());
+            if ConfigSet::parse(text.as_bytes()).is_ok() {
+                prop_assert!(ConfigSet::parse(edited.as_bytes()).is_ok());
+            }
+        }
+
+        /// `set` is idempotent: setting the same value twice is byte-identical.
+        #[test]
+        fn file_edit_set_idempotent(
+            section in "[a-z]{1,6}", key in "[a-z]{1,8}",
+            v1 in "[a-z0-9]{0,10}", v2 in "[a-z0-9]{0,10}"
+        ) {
+            let text = format!("[{section}]\n\t{key} = {v1}\n# c\n[other]\n\tz = 1\n");
+            let once = super::file::set_value(&text, &section, None, &key, &v2).unwrap();
+            let twice = super::file::set_value(&once, &section, None, &key, &v2).unwrap();
+            prop_assert_eq!(once, twice);
+        }
+
+        /// `from_file` on arbitrary bytes must never panic (it either loads
+        /// or returns an error). Unique temp paths keep cases independent.
+        #[test]
+        fn from_file_never_panics(data: Vec<u8>) {
+            let n = FILE_N.fetch_add(1, Ordering::SeqCst);
+            let p = std::env::temp_dir().join(format!("git-config-prop-{}-{n}", std::process::id()));
+            std::fs::write(&p, &data).unwrap();
+            let _ = ConfigSet::from_file(&p);
+            let _ = std::fs::remove_file(&p);
+        }
+
+        /// Value matching never panics; fixed matching is plain equality.
+        #[test]
+        fn value_matcher_never_panics(pat in "\\PC*", value in "\\PC*") {
+            let _ = super::file::ValueMatcher::compile(&pat, false).map(|m| m.matches(&value));
+            let fixed = super::file::ValueMatcher::compile(&pat, true).unwrap();
+            prop_assert_eq!(fixed.matches(&value), pat == value);
         }
     }
 }
