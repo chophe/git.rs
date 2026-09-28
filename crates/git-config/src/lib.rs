@@ -39,6 +39,16 @@ fn quote_subsection(sub: &str) -> String {
 pub enum ConfigError {
     Io(String),
     IncludeCycle(PathBuf),
+    /// An include chain deeper than [`MAX_INCLUDE_DEPTH`], with C's exact
+    /// text (`config.c` `include_depth_advice`): `path` is the file being
+    /// included, `from` the file containing the directive. Distinct from
+    /// [`ConfigError::IncludeCycle`] (a canonical-path repeat on the current
+    /// chain, e.g. a direct two-file cycle); C itself only has the depth
+    /// die, but the plan keeps the two errors distinct.
+    IncludeDepth { limit: usize, path: PathBuf, from: PathBuf },
+    /// A `remote.*.url` entry inside a file reached through an
+    /// `includeIf "hasconfig:remote.*.url:..."` edge (C `forbid_remote_url`).
+    RemoteUrlForbidden,
     UnterminatedQuote,
     /// A malformed line (e.g. a section header without a closing bracket),
     /// mirroring C git's `fatal: bad config line N [in file F]`.
@@ -50,6 +60,18 @@ impl fmt::Display for ConfigError {
         match self {
             ConfigError::Io(e) => write!(f, "could not read config: {e}"),
             ConfigError::IncludeCycle(p) => write!(f, "include cycle detected: {}", p.display()),
+            ConfigError::IncludeDepth { limit, path, from } => {
+                write!(
+                    f,
+                    "exceeded maximum include depth ({limit}) while including\n\t{}\nfrom\n\t{}\nThis might be due to circular includes.",
+                    path.display(),
+                    from.display()
+                )
+            }
+            ConfigError::RemoteUrlForbidden => write!(
+                f,
+                "remote URLs cannot be configured in file directly or indirectly included by includeIf.hasconfig:remote.*.url"
+            ),
             ConfigError::UnterminatedQuote => write!(f, "unterminated quote in config value"),
             ConfigError::BadLine { line, file } => {
                 write!(f, "bad config line {line}")?;
@@ -93,38 +115,86 @@ impl ConfigSet {
         Ok(set)
     }
 
-    /// Parse configuration from a file, resolving `[include] path` entries
-    /// relative to the file's directory.
+    /// Parse configuration from a file, resolving `[include]` and
+    /// `[includeIf]` entries. Repo-dependent conditions (`gitdir:`,
+    /// `onbranch:`, `worktree:`) evaluate false without repository context
+    /// (see [`from_file_with`]); `hasconfig:remote.*.url:` works standalone.
     pub fn from_file(path: &Path) -> Result<ConfigSet, ConfigError> {
-        let mut set = ConfigSet::new();
-        let mut seen = Vec::new();
-        set.load_file(path, &mut seen)?;
-        Ok(set)
+        Self::from_file_with(path, &IncludeContext::default())
     }
 
-    fn load_file(&mut self, path: &Path, seen: &mut Vec<PathBuf>) -> Result<(), ConfigError> {
-        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-        if seen.contains(&canonical) {
-            return Err(ConfigError::IncludeCycle(canonical));
+    /// Parse configuration from a file with repository context for
+    /// conditional includes.
+    pub fn from_file_with(path: &Path, ctx: &IncludeContext) -> Result<ConfigSet, ConfigError> {
+        load_roots(&[path.to_path_buf()], ctx, true, &[])
+    }
+
+    /// Recursive include loader (phase B): appends `path`'s entries, then
+    /// follows its include directives in order. `seen` is the current chain
+    /// (pushed on entry, popped on exit) so diamonds re-process like C while
+    /// true cycles die. Missing files are skipped unless `required` (C
+    /// `access_or_die`); `depth` counts include edges from the root.
+    fn load_file(
+        &mut self,
+        path: &Path,
+        seen: &mut Vec<PathBuf>,
+        depth: usize,
+        ctx: &IncludeContext,
+        remote_urls: &[String],
+        under_hasconfig: bool,
+        required: bool,
+    ) -> Result<(), ConfigError> {
+        if !path.exists() {
+            if required {
+                return Err(ConfigError::Io(
+                    std::io::Error::new(std::io::ErrorKind::NotFound, format!("{}", path.display()))
+                        .to_string(),
+                ));
+            }
+            return Ok(());
         }
-        seen.push(canonical);
-        let data = std::fs::read(path).map_err(|e| ConfigError::Io(e.to_string()))?;
-        let origin = Some(path.to_path_buf());
-        let includes = self.parse_into(&data, origin)?;
-        for inc in includes {
-            self.load_file(&inc, seen)?;
+        let (entries, directives) = read_parsed(path, seen)?;
+        if under_hasconfig && has_remote_url(&entries) {
+            return Err(ConfigError::RemoteUrlForbidden);
         }
+        self.entries.extend(entries);
+        for directive in &directives {
+            let inc = resolve_include_path(&directive.value, path.parent());
+            let is_hasconfig = directive.condition.as_deref().is_some_and(is_hasconfig_condition);
+            if let Some(cond) = &directive.condition {
+                if !include_condition_true(cond, path.parent(), ctx, remote_urls) {
+                    continue;
+                }
+            }
+            if depth + 1 > MAX_INCLUDE_DEPTH {
+                return Err(ConfigError::IncludeDepth {
+                    limit: MAX_INCLUDE_DEPTH,
+                    path: inc,
+                    from: path.to_path_buf(),
+                });
+            }
+            self.load_file(
+                &inc,
+                seen,
+                depth + 1,
+                ctx,
+                remote_urls,
+                under_hasconfig || is_hasconfig,
+                false,
+            )?;
+        }
+        seen.pop();
         Ok(())
     }
 
-    fn parse_into(&mut self, data: &[u8], origin: Option<PathBuf>) -> Result<Vec<PathBuf>, ConfigError> {
+    fn parse_into(&mut self, data: &[u8], origin: Option<PathBuf>) -> Result<Vec<PendingInclude>, ConfigError> {
         let text = std::str::from_utf8(data).unwrap_or("").to_string();
         let start = self.entries.len();
         let mut section: String = String::new();
         let mut subsection: Option<String> = None;
         let mut last_value_index: Option<usize> = None;
         let mut continuation = false;
-        let mut includes = Vec::new();
+        let mut includes: Vec<PendingInclude> = Vec::new();
 
         for (n, line) in text.lines().enumerate() {
             let line_no = n + 1;
@@ -168,13 +238,40 @@ impl ConfigSet {
                 let (s, sub) = split_section(inner);
                 section = s;
                 subsection = sub;
+                // C also accepts `key = value` on the same line after `]`
+                // (used by `t/t1305` conditional-include setups); a trailing
+                // comment alone is ignored.
+                let rest = trimmed[end + 1..].trim();
+                if rest.is_empty() || rest.starts_with('#') || rest.starts_with(';') {
+                    continue;
+                }
+                let (key, raw_value) = split_key_value(rest);
+                let (stripped_value, cont) = strip_continuation(raw_value.trim());
+                let value = unquote_value(&stripped_value).map_err(|_| ConfigError::BadLine {
+                    line: line_no,
+                    file: origin.clone(),
+                })?;
+                self.entries.push(ConfigEntry {
+                    section: section.clone(),
+                    subsection: subsection.clone(),
+                    key,
+                    value,
+                    origin: origin.clone(),
+                });
+                last_value_index = Some(self.entries.len() - 1);
+                continuation = cont;
                 continue;
             }
 
             // key [=] value
             let (key, raw_value) = split_key_value(trimmed);
             let (stripped_value, cont) = strip_continuation(raw_value.trim());
-            let value = unquote_value(&stripped_value)?;
+            // C reports quote errors as `bad config line N`, like any other
+            // malformed line (probed on the tree binary).
+            let value = unquote_value(&stripped_value).map_err(|_| ConfigError::BadLine {
+                line: line_no,
+                file: origin.clone(),
+            })?;
             self.entries.push(ConfigEntry {
                 section: section.clone(),
                 subsection: subsection.clone(),
@@ -186,12 +283,21 @@ impl ConfigSet {
             continuation = cont;
         }
 
-        // Collect `[include] path` entries from this file to resolve after it.
+        // Collect `[include] path` and `[includeIf "<cond>"] path` entries
+        // from this file to resolve after it, in file order.
         for entry in &self.entries[start..] {
-            if entry.section == "include" && entry.key == "path" {
-                if let Some(base) = &entry.origin {
-                    let p = expand_path(&entry.value, base.parent());
-                    includes.push(p);
+            if entry.key == "path" {
+                if entry.section == "include" {
+                    includes.push(PendingInclude { condition: None, value: entry.value.clone() });
+                } else if entry.section == "includeif" {
+                    if let Some(cond) = &entry.subsection {
+                        includes.push(PendingInclude {
+                            condition: Some(cond.clone()),
+                            value: entry.value.clone(),
+                        });
+                    }
+                    // A bare `[includeIf]` without a condition never matches
+                    // (C `parse_config_key` yields no condition).
                 }
             }
         }
@@ -296,20 +402,32 @@ impl ConfigSet {
     /// `[include]` entries; CLI overlays (`GIT_CONFIG_COUNT` pairs, `-c`)
     /// are applied by the caller afterwards so they always win.
     pub fn load_repo_scopes(scopes: &RepoScopes) -> Result<ConfigSet, ConfigError> {
-        let mut set = ConfigSet::new();
+        let mut paths = Vec::new();
         if env_allows_system() {
-            load_scope_into(&mut set, &system_config_path())?;
+            paths.push(system_config_path());
         }
         let (user, xdg) = global_config_paths();
         if let Some(x) = xdg {
-            load_scope_into(&mut set, &x)?;
+            paths.push(x);
         }
         if let Some(u) = user {
-            load_scope_into(&mut set, &u)?;
+            paths.push(u);
         }
-        load_scope_into(&mut set, &scopes.commondir.join("config"))?;
+        paths.push(scopes.commondir.join("config"));
+
+        let ctx = IncludeContext {
+            git_dir: Some(scopes.git_dir.clone()),
+            git_dir_fallback: scopes.git_dir_verbatim.clone(),
+            worktree: scopes.worktree.clone(),
+            head_branch: resolve_head_branch(&scopes.git_dir),
+        };
+        let mut set = load_roots(&paths, &ctx, false, &[])?;
         if worktree_config_enabled(&set) {
-            load_scope_into(&mut set, &scopes.git_dir.join("config.worktree"))?;
+            // The worktree scope's `hasconfig:` conditions see the main
+            // scopes' remotes too (C collects across the whole sequence).
+            let wt_path = scopes.git_dir.join("config.worktree");
+            let wt = load_roots(std::slice::from_ref(&wt_path), &ctx, false, &paths)?;
+            set.append(wt);
         }
         Ok(set)
     }
@@ -326,6 +444,9 @@ pub struct RepoScopes {
     /// (explicit `GIT_WORK_TREE` or the default parent directory; `None`
     /// when bare). Evaluated by conditional includes (task 2).
     pub worktree: Option<PathBuf>,
+    /// Unresolved absolute `.git` directory (C retries `gitdir:` matches
+    /// against the non-realpath form so symlinked patterns keep working).
+    pub git_dir_verbatim: Option<PathBuf>,
 }
 
 fn env_bool(name: &str, def: bool) -> bool {
@@ -377,15 +498,394 @@ fn worktree_config_enabled(set: &ConfigSet) -> bool {
         && set.get_bool("extensions", "worktreeconfig") == Some(true)
 }
 
-/// Load one scope file: a missing file means empty (C `access_or_die` skip),
-/// a corrupt file is fatal (C `die("bad config line ...")`).
-fn load_scope_into(set: &mut ConfigSet, path: &Path) -> Result<(), ConfigError> {
+/// C `MAX_INCLUDE_DEPTH` (`config.c`): include chains deeper than this die
+/// instead of recursing forever.
+pub const MAX_INCLUDE_DEPTH: usize = 10;
+
+/// Repository context for evaluating conditional includes
+/// (`include_condition_is_true` in `config.c`).
+#[derive(Debug, Clone, Default)]
+pub struct IncludeContext {
+    /// Canonical `.git` directory for `gitdir:` conditions.
+    pub git_dir: Option<PathBuf>,
+    /// Unresolved absolute `.git` directory (C retries the match against the
+    /// non-realpath form so symlinked patterns keep working).
+    pub git_dir_fallback: Option<PathBuf>,
+    /// Worktree root for `worktree:` conditions (`None` in bare repos).
+    pub worktree: Option<PathBuf>,
+    /// Current branch short name for `onbranch:` (from `HEAD`'s symref target,
+    /// even when unborn; `None` when detached or unreadable).
+    pub head_branch: Option<String>,
+}
+
+/// One `[include] path` / `[includeIf "<cond>"] path` directive.
+#[derive(Debug, Clone)]
+struct PendingInclude {
+    condition: Option<String>,
+    value: String,
+}
+
+/// Read `path`, check the chain for a canonical-path repeat, and split it
+/// into entries plus include directives. Pushes onto `seen`; the caller pops
+/// on success (path-based cycle detection, so diamond includes re-process
+/// exactly like C).
+fn read_parsed(
+    path: &Path,
+    seen: &mut Vec<PathBuf>,
+) -> Result<(Vec<ConfigEntry>, Vec<PendingInclude>), ConfigError> {
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    if seen.contains(&canonical) {
+        return Err(ConfigError::IncludeCycle(canonical));
+    }
+    seen.push(canonical);
+    let data = std::fs::read(path).map_err(|e| ConfigError::Io(e.to_string()))?;
+    let mut tmp = ConfigSet::new();
+    let directives = tmp.parse_into(&data, Some(path.to_path_buf()))?;
+    Ok((tmp.entries, directives))
+}
+
+fn has_remote_url(entries: &[ConfigEntry]) -> bool {
+    entries
+        .iter()
+        .any(|e| e.section == "remote" && e.key == "url" && e.subsection.is_some())
+}
+
+fn is_hasconfig_condition(cond: &str) -> bool {
+    cond.starts_with("hasconfig:remote.*.url:")
+}
+
+/// Evaluate one `includeIf "<cond>"` condition (C
+/// `include_condition_is_true`). Unknown condition keywords are silently
+/// false, like C.
+fn include_condition_true(
+    cond: &str,
+    including_dir: Option<&Path>,
+    ctx: &IncludeContext,
+    remote_urls: &[String],
+) -> bool {
+    if let Some(pat) = cond.strip_prefix("gitdir/i:") {
+        return match_path_condition(pat, including_dir, ctx.git_dir.as_deref(), ctx.git_dir_fallback.as_deref(), true);
+    }
+    if let Some(pat) = cond.strip_prefix("gitdir:") {
+        return match_path_condition(pat, including_dir, ctx.git_dir.as_deref(), ctx.git_dir_fallback.as_deref(), false);
+    }
+    if let Some(pat) = cond.strip_prefix("worktree/i:") {
+        return match_path_condition(pat, including_dir, ctx.worktree.as_deref(), None, true);
+    }
+    if let Some(pat) = cond.strip_prefix("worktree:") {
+        return match_path_condition(pat, including_dir, ctx.worktree.as_deref(), None, false);
+    }
+    if let Some(pat) = cond.strip_prefix("onbranch:") {
+        return match_onbranch(pat, ctx.head_branch.as_deref());
+    }
+    if let Some(glob) = cond.strip_prefix("hasconfig:remote.*.url:") {
+        return remote_urls.iter().any(|url| wildmatch(glob, url, false));
+    }
+    false
+}
+
+/// `gitdir:` / `worktree:` matching (C `include_by_path`): the pattern is
+/// prepared (tilde expansion, `./` resolved against the including file,
+/// unanchored patterns gain a `**/` prefix, trailing slashes gain `**`) and
+/// matched against the real path with `WM_PATHNAME` semantics, retrying
+/// against the unresolved absolute form when the first match fails (C's
+/// `strbuf_add_absolute_path` second try, for symlinked setups).
+fn match_path_condition(
+    cond: &str,
+    including_dir: Option<&Path>,
+    path: Option<&Path>,
+    fallback: Option<&Path>,
+    icase: bool,
+) -> bool {
+    let Some(path) = path else {
+        return false;
+    };
+    let pattern = prepare_condition_pattern(cond, including_dir);
+    for candidate in path_candidates(path, fallback) {
+        if wildmatch(&pattern, &candidate, icase) {
+            return true;
+        }
+    }
+    false
+}
+
+fn path_candidates(path: &Path, fallback: Option<&Path>) -> Vec<String> {
+    let mut out = Vec::new();
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    out.push(canonical.to_string_lossy().into_owned());
+    // The unresolved absolute form (may still contain symlinks).
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else if let Some(cwd) = std::env::current_dir().ok() {
+        cwd.join(path)
+    } else {
+        path.to_path_buf()
+    };
+    let s = absolute.to_string_lossy().into_owned();
+    if !out.contains(&s) {
+        out.push(s);
+    }
+    if let Some(fb) = fallback {
+        let s = fb.to_string_lossy().into_owned();
+        if !out.contains(&s) {
+            out.push(s);
+        }
+    }
+    out
+}
+
+/// Prepare a `gitdir:`/`worktree:` condition pattern (C
+/// `prepare_include_condition_pattern`): `~` expansion, a leading `./`
+/// resolved against the including file's directory (realpath'd), `**/`
+/// prepended when not absolute, `**` appended for a trailing slash.
+fn prepare_condition_pattern(cond: &str, including_dir: Option<&Path>) -> String {
+    let mut pat = tilde_expand(cond);
+    if pat.starts_with("./") || pat == "." {
+        if let Some(dir) = including_dir {
+            let base = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+            let rest = pat.strip_prefix("./").unwrap_or("");
+            pat = base.join(rest).to_string_lossy().into_owned();
+        }
+    } else if !is_absolute_pattern(&pat) {
+        pat = format!("**/{pat}");
+    }
+    if pat.ends_with('/') {
+        pat.push_str("**");
+    }
+    pat
+}
+
+fn is_absolute_pattern(pat: &str) -> bool {
+    pat.starts_with('/') || (pat.len() >= 3 && pat.as_bytes()[1] == b':' && (pat.as_bytes()[2] == b'/' || pat.as_bytes()[2] == b'\\'))
+}
+
+/// `onbranch:` matching (C `include_by_branch`): the pattern matches the
+/// `HEAD` symref's short branch name with `WM_PATHNAME` semantics; a trailing
+/// slash gains an implicit `/**`. Detached or missing `HEAD` never matches.
+fn match_onbranch(pattern: &str, branch: Option<&str>) -> bool {
+    let Some(branch) = branch else {
+        return false;
+    };
+    let mut pat = pattern.to_string();
+    if pat.ends_with('/') {
+        pat.push_str("**");
+    }
+    wildmatch(&pat, branch, false)
+}
+
+/// Read the `HEAD` symref target's short branch name (`refs/heads/<branch>`),
+/// even when the branch is unborn (C `refs_resolve_ref_unsafe` reports the
+/// symref target regardless of existence). Detached/missing `HEAD` → `None`.
+fn resolve_head_branch(git_dir: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
+    let target = content.strip_prefix("ref: ")?.trim();
+    target.strip_prefix("refs/heads/").map(|s| s.to_string())
+}
+
+/// Resolve an `include.path` value: tilde expansion, then relative paths
+/// resolve from the including file's directory (C `handle_path_include`).
+fn resolve_include_path(value: &str, including_dir: Option<&Path>) -> PathBuf {
+    expand_path(value, including_dir)
+}
+
+/// Expand a leading `~/` or bare `~` via `$HOME`, like C
+/// `interpolate_path`. Other `~user` forms are left as-is.
+fn tilde_expand(value: &str) -> String {
+    if let Some(rest) = value.strip_prefix("~/") {
+        if let Some(home) = std::env::var_os("HOME") {
+            return format!("{}/{}", PathBuf::from(home).to_string_lossy(), rest);
+        }
+    } else if value == "~" {
+        if let Some(home) = std::env::var_os("HOME") {
+            return home.to_string_lossy().into_owned();
+        }
+    }
+    value.to_string()
+}
+
+/// A byte index into a (possibly non-UTF8) byte string is a character
+/// boundary unless it points at a UTF-8 continuation byte.
+fn is_boundary(t: &[u8], i: usize) -> bool {
+    i >= t.len() || (t[i] & 0xC0) != 0x80
+}
+
+/// Git `wildmatch` with `WM_PATHNAME` semantics (`*`/`?`/`[...]` never cross
+/// `/`; `**` does), plus `WM_CASEFOLD` when `casefold` is set. Supports
+/// literals, `?`, `*`, `**`, `[...]` classes (ranges, `!`/`^` negation) and
+/// backslash escapes — enough for every `t/t1305` + `t/t1300` pattern.
+fn wildmatch(pattern: &str, text: &str, casefold: bool) -> bool {
+    wm(pattern.as_bytes(), text.as_bytes(), casefold)
+}
+
+fn wm(p: &[u8], t: &[u8], cf: bool) -> bool {
+    if p.is_empty() {
+        return t.is_empty();
+    }
+    if p[0] == b'*' {
+        let mut i = 1;
+        while p.get(i) == Some(&b'*') {
+            i += 1;
+        }
+        let double = i >= 2;
+        let rest = &p[i..];
+        // `*` stops at `/` (pathname); `**` crosses it.
+        for k in 0..=t.len() {
+            if !double && t[..k].contains(&b'/') {
+                break;
+            }
+            if wm(rest, &t[k..], cf) {
+                return true;
+            }
+            // Never split a multi-byte char when advancing.
+            if k < t.len() && !is_boundary(t, k + 1) {
+                continue;
+            }
+        }
+        return false;
+    }
+    if t.is_empty() {
+        return false;
+    }
+    match p[0] {
+        b'?' => {
+            if t[0] == b'/' {
+                return false;
+            }
+            wm(&p[1..], &t[1..], cf)
+        }
+        b'\\' if p.len() > 1 => eq_byte(p[1], t[0], cf) && wm(&p[2..], &t[1..], cf),
+        b'[' => match_class(p, t, cf).map(|(plen, tlen)| wm(&p[plen..], &t[tlen..], cf)).unwrap_or(false),
+        c => eq_byte(c, t[0], cf) && wm(&p[1..], &t[1..], cf),
+    }
+}
+
+fn eq_byte(a: u8, b: u8, cf: bool) -> bool {
+    if cf {
+        a.to_ascii_lowercase() == b.to_ascii_lowercase()
+    } else {
+        a == b
+    }
+}
+
+/// Match a `[...]` class against the head of `t`. Returns the consumed
+/// pattern/text lengths on success. A class never matches `/` (pathname).
+fn match_class(p: &[u8], t: &[u8], cf: bool) -> Option<(usize, usize)> {
+    let mut i = 1;
+    let mut negated = false;
+    if p.get(i) == Some(&b'!') || p.get(i) == Some(&b'^') {
+        negated = true;
+        i += 1;
+    }
+    if t[0] == b'/' {
+        return None;
+    }
+    let mut matched = false;
+    let mut first = true;
+    while i < p.len() {
+        if p[i] == b']' && !first {
+            break;
+        }
+        if p[i] == b'\\' && i + 1 < p.len() {
+            i += 1;
+            if eq_byte(p[i], t[0], cf) {
+                matched = true;
+            }
+        } else if i + 2 < p.len() && p[i + 1] == b'-' && p[i + 2] != b']' {
+            let (lo, hi) = (p[i], p[i + 2]);
+            let c = if cf { t[0].to_ascii_lowercase() } else { t[0] };
+            let (lo, hi) = if cf { (lo.to_ascii_lowercase(), hi.to_ascii_lowercase()) } else { (lo, hi) };
+            if lo <= c && c <= hi {
+                matched = true;
+            }
+            i += 2;
+        } else if eq_byte(p[i], t[0], cf) {
+            matched = true;
+        }
+        i += 1;
+        first = false;
+    }
+    if i >= p.len() {
+        return None; // unterminated class: literal-match failure
+    }
+    if matched != negated {
+        // Consume one full character of text (may be multi-byte).
+        let mut tlen = 1;
+        while tlen < t.len() && !is_boundary(t, tlen) {
+            tlen += 1;
+        }
+        Some((i + 1, tlen))
+    } else {
+        None
+    }
+}
+
+/// Phase A: walk the include closure of `path` following every edge
+/// (conditional edges count as taken, like C's `populate_remote_urls` with
+/// `unconditional_remote_url`), collecting `remote.*.url` values for
+/// `hasconfig:` matching and enforcing the remote-URL forbid inside
+/// `hasconfig`-reachable subtrees. Missing files are skipped.
+fn collect_includes(
+    path: &Path,
+    from: Option<&Path>,
+    seen: &mut Vec<PathBuf>,
+    depth: usize,
+    remote_urls: &mut Vec<String>,
+    under_hasconfig: bool,
+) -> Result<(), ConfigError> {
     if !path.exists() {
         return Ok(());
     }
-    let scope = ConfigSet::from_file(path)?;
-    set.append(scope);
+    if let Some(from) = from {
+        if depth > MAX_INCLUDE_DEPTH {
+            return Err(ConfigError::IncludeDepth {
+                limit: MAX_INCLUDE_DEPTH,
+                path: path.to_path_buf(),
+                from: from.to_path_buf(),
+            });
+        }
+    }
+    let (entries, directives) = read_parsed(path, seen)?;
+    if under_hasconfig && has_remote_url(&entries) {
+        return Err(ConfigError::RemoteUrlForbidden);
+    }
+    for entry in &entries {
+        if entry.section == "remote" && entry.key == "url" && entry.subsection.is_some() {
+            remote_urls.push(entry.value.clone());
+        }
+    }
+    for directive in &directives {
+        let inc = resolve_include_path(&directive.value, path.parent());
+        let is_hasconfig = directive.condition.as_deref().is_some_and(is_hasconfig_condition);
+        collect_includes(&inc, Some(path), seen, depth + 1, remote_urls, under_hasconfig || is_hasconfig)?;
+    }
+    seen.pop();
     Ok(())
+}
+
+/// Load several root files: first collect remote URLs across all of them
+/// (C evaluates `hasconfig:` against the full config, even entries defined
+/// after — or in later files than — the condition), then load in order.
+/// `collect_extra` roots contribute remote URLs (and forbid checks) without
+/// being loaded — used so the worktree scope sees the main scopes' remotes.
+fn load_roots(
+    paths: &[PathBuf],
+    ctx: &IncludeContext,
+    require_first: bool,
+    collect_extra: &[PathBuf],
+) -> Result<ConfigSet, ConfigError> {
+    let mut remote_urls = Vec::new();
+    {
+        let mut seen = Vec::new();
+        for path in paths.iter().chain(collect_extra.iter()) {
+            collect_includes(path, None, &mut seen, 0, &mut remote_urls, false)?;
+        }
+    }
+    let mut set = ConfigSet::new();
+    for (i, path) in paths.iter().enumerate() {
+        let mut seen = Vec::new();
+        set.load_file(path, &mut seen, 0, ctx, &remote_urls, false, require_first && i == 0)?;
+    }
+    Ok(set)
 }
 
 /// Split a section header body into section and optional subsection.
@@ -745,6 +1245,7 @@ mod tests {
                 git_dir: self.git_dir.clone(),
                 commondir: self.common_dir.clone(),
                 worktree: None,
+                git_dir_verbatim: None,
             }
         }
     }
@@ -836,6 +1337,362 @@ mod tests {
         assert_eq!(super::parse_bool("Yes"), Some(true));
         assert_eq!(super::parse_bool("OFF"), Some(false));
         assert_eq!(super::parse_bool("maybe"), None);
+    }
+
+    #[test]
+    fn single_line_section_header_with_value() {
+        // C parses `[section]key = value` on one line (t/t1305 writes
+        // conditional includes this way).
+        let cfg = ConfigSet::parse(b"[user]name = inline\n").unwrap();
+        assert_eq!(cfg.get("user", "name"), Some("inline"));
+        let cfg = ConfigSet::parse(b"[user] # comment\n\tname = alice\n").unwrap();
+        assert_eq!(cfg.get("user", "name"), Some("alice"));
+    }
+
+    #[test]
+    fn unterminated_quote_is_bad_line_like_c() {
+        let err = ConfigSet::parse(b"[user]\n\tname = \"oops\n").unwrap_err();
+        assert!(matches!(err, ConfigError::BadLine { line: 2, file: None }));
+        assert_eq!(format!("{err}"), "bad config line 2");
+    }
+
+    fn include_ctx(git_dir: &Path, worktree: Option<&Path>, branch: Option<&str>) -> super::IncludeContext {
+        super::IncludeContext {
+            git_dir: Some(git_dir.to_path_buf()),
+            git_dir_fallback: None,
+            worktree: worktree.map(|p| p.to_path_buf()),
+            head_branch: branch.map(|s| s.to_string()),
+        }
+    }
+
+    fn write_include_repo(tag: &str) -> (std::sync::MutexGuard<'static, ()>, PathBuf, PathBuf) {
+        // No env dependence (absolute paths only), but serialize against env
+        // mutators anyway via the shared lock for determinism.
+        let guard = lock_env();
+        let dir = std::env::temp_dir().join(format!("git-config-inc-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let git_dir = dir.join("foo").join(".git");
+        std::fs::create_dir_all(&git_dir).unwrap();
+        (guard, dir, git_dir)
+    }
+
+    #[test]
+    fn include_gitdir_matches_inside_ignored_outside() {
+        let (_guard, dir, git_dir) = write_include_repo("gitdir");
+        std::fs::write(dir.join("yes.conf"), "[test]\n\tone = 1\n").unwrap();
+        std::fs::write(dir.join("no.conf"), "[test]\n\ttwo = 2\n").unwrap();
+        let main = dir.join("main.conf");
+        std::fs::write(
+            &main,
+            format!(
+                "[includeIf \"gitdir:foo/\"]\n\tpath = {}\n[includeIf \"gitdir:other/\"]\n\tpath = {}\n",
+                dir.join("yes.conf").display(),
+                dir.join("no.conf").display()
+            ),
+        )
+        .unwrap();
+        let cfg = ConfigSet::from_file_with(&main, &include_ctx(&git_dir, None, None)).unwrap();
+        assert_eq!(cfg.get("test", "one"), Some("1"));
+        assert_eq!(cfg.get("test", "two"), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn include_gitdir_icase_and_double_star() {
+        let (_guard, dir, git_dir) = write_include_repo("icase");
+        // foo/.git nested deeper: ** patterns must cross slashes.
+        let deep = dir.join("a").join("foo").join("x").join("bar").join(".git");
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(dir.join("hit.conf"), "[test]\n\thit = yes\n").unwrap();
+        let main = dir.join("main.conf");
+        std::fs::write(
+            &main,
+            format!(
+                "[includeIf \"gitdir/i:FOO/\"]\n\tpath = {}\n[includeIf \"gitdir:**/foo/**/bar/**\"]\n\tpath = {}\n",
+                dir.join("hit.conf").display(),
+                dir.join("hit.conf").display()
+            ),
+        )
+        .unwrap();
+        let cfg = ConfigSet::from_file_with(&main, &include_ctx(&deep, None, None)).unwrap();
+        // Both conditions match the same file; absence of error + value is the signal.
+        assert_eq!(cfg.get("test", "hit"), Some("yes"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn include_gitdir_tilde_and_dot_relative() {
+        let layout = isolated_scopes("increl");
+        // HOME == layout.dir here.
+        let home_foo_git = layout.dir.join("foo").join(".git");
+        std::fs::create_dir_all(&home_foo_git).unwrap();
+        std::fs::write(layout.dir.join("t.conf"), "[test]\n\ttilde = 1\n").unwrap();
+        std::fs::write(layout.dir.join("d.conf"), "[test]\n\tdot = 1\n").unwrap();
+        let main = layout.dir.join(".gitconfig");
+        std::fs::write(
+            &main,
+            format!(
+                "[includeIf \"gitdir:~/foo/\"]\n\tpath = {}\n[includeIf \"gitdir:./foo/.git\"]\n\tpath = {}\n",
+                layout.dir.join("t.conf").display(),
+                layout.dir.join("d.conf").display()
+            ),
+        )
+        .unwrap();
+        let cfg = ConfigSet::from_file_with(&main, &include_ctx(&home_foo_git, None, None)).unwrap();
+        assert_eq!(cfg.get("test", "tilde"), Some("1"));
+        assert_eq!(cfg.get("test", "dot"), Some("1"));
+    }
+
+    #[test]
+    fn include_onbranch_exact_wildcard_and_slash() {
+        let (_guard, dir, git_dir) = write_include_repo("onbranch");
+        std::fs::write(dir.join("b.conf"), "[test]\n\tb = 1\n").unwrap();
+        let main = dir.join("main.conf");
+        std::fs::write(
+            &main,
+            format!(
+                "[includeIf \"onbranch:foo-branch\"]\n\tpath = {}\n[includeIf \"onbranch:?oo-*/**\"]\n\tpath = {}\n[includeIf \"onbranch:foo-dir/\"]\n\tpath = {}\n[includeIf \"onbranch:other\"]\n\tpath = {}\n",
+                dir.join("b.conf").display(),
+                dir.join("b.conf").display(),
+                dir.join("b.conf").display(),
+                dir.join("b.conf").display()
+            ),
+        )
+        .unwrap();
+        // Branch foo-branch/a/b/c: exact fails, wildcard + slash-prefix match.
+        let cfg = ConfigSet::from_file_with(&main, &include_ctx(&git_dir, None, Some("foo-branch/a/b/c"))).unwrap();
+        assert_eq!(cfg.get("test", "b"), Some("1"));
+        // Detached HEAD: nothing matches.
+        let cfg = ConfigSet::from_file_with(&main, &include_ctx(&git_dir, None, None)).unwrap();
+        assert_eq!(cfg.get("test", "b"), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_head_branch_unborn_detached_missing() {
+        let (_guard, dir, _git) = write_include_repo("head");
+        let gd = dir.join("repo.git");
+        std::fs::create_dir_all(&gd).unwrap();
+        // Unborn: symref target reports even though the branch is missing.
+        std::fs::write(gd.join("HEAD"), "ref: refs/heads/master\n").unwrap();
+        assert_eq!(super::resolve_head_branch(&gd).as_deref(), Some("master"));
+        // Detached: no branch.
+        std::fs::write(gd.join("HEAD"), "3b18e512dba79e4c8300dd08aeb37f8e1c3a69db\n").unwrap();
+        assert_eq!(super::resolve_head_branch(&gd), None);
+        std::fs::remove_file(gd.join("HEAD")).unwrap();
+        assert_eq!(super::resolve_head_branch(&gd), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn include_hasconfig_sees_later_remote_in_same_file() {
+        // t/t1300: the remote is defined AFTER the condition, yet matches —
+        // the pre-pass collects remotes across the whole file first.
+        let (_guard, dir, git_dir) = write_include_repo("hasconfig");
+        std::fs::write(dir.join("inc.conf"), "[user]\n\tthis = yes\n").unwrap();
+        let main = dir.join("main.conf");
+        std::fs::write(
+            &main,
+            format!(
+                "[includeIf \"hasconfig:remote.*.url:foourl\"]\n\tpath = {}\n[remote \"foo\"]\n\turl = foourl\n",
+                dir.join("inc.conf").display()
+            ),
+        )
+        .unwrap();
+        let cfg = ConfigSet::from_file_with(&main, &include_ctx(&git_dir, None, None)).unwrap();
+        assert_eq!(cfg.get("user", "this"), Some("yes"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn include_hasconfig_globs() {
+        let (_guard, dir, git_dir) = write_include_repo("hasglob");
+        for (name, key) in [("s1", "dss"), ("s2", "dse"), ("s3", "dsm"), ("s4", "ssm")] {
+            std::fs::write(dir.join(name), format!("[user]\n\t{key} = yes\n")).unwrap();
+        }
+        std::fs::write(dir.join("no"), "[user]\n\tno = no\n").unwrap();
+        let main = dir.join("main.conf");
+        let p = |n: &str| dir.join(n).display().to_string();
+        std::fs::write(
+            &main,
+            format!(
+                "[remote \"foo\"]\n\turl = https://foo/bar/baz\n\
+                 [includeIf \"hasconfig:remote.*.url:**/baz\"]\n\tpath = {}\n\
+                 [includeIf \"hasconfig:remote.*.url:**/nomatch\"]\n\tpath = {}\n\
+                 [includeIf \"hasconfig:remote.*.url:https:/**\"]\n\tpath = {}\n\
+                 [includeIf \"hasconfig:remote.*.url:https:/**/baz\"]\n\tpath = {}\n\
+                 [includeIf \"hasconfig:remote.*.url:https://*/bar/baz\"]\n\tpath = {}\n\
+                 [includeIf \"hasconfig:remote.*.url:https://*/baz\"]\n\tpath = {}\n",
+                p("s1"),
+                p("no"),
+                p("s2"),
+                p("s3"),
+                p("s4"),
+                p("no"),
+            ),
+        )
+        .unwrap();
+        let cfg = ConfigSet::from_file_with(&main, &include_ctx(&git_dir, None, None)).unwrap();
+        for key in ["dss", "dse", "dsm", "ssm"] {
+            assert_eq!(cfg.get("user", key), Some("yes"), "key {key}");
+        }
+        assert_eq!(cfg.get("user", "no"), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn include_hasconfig_forbids_remote_url_with_c_text() {
+        let (_guard, dir, git_dir) = write_include_repo("forbid");
+        std::fs::write(dir.join("evil.conf"), "[remote \"bar\"]\n\turl = barurl\n").unwrap();
+        let main = dir.join("main.conf");
+        std::fs::write(
+            &main,
+            format!(
+                "[remote \"foo\"]\n\turl = foourl\n[includeIf \"hasconfig:remote.*.url:foourl\"]\n\tpath = {}\n",
+                dir.join("evil.conf").display()
+            ),
+        )
+        .unwrap();
+        let err = ConfigSet::from_file_with(&main, &include_ctx(&git_dir, None, None)).unwrap_err();
+        assert_eq!(err, ConfigError::RemoteUrlForbidden);
+        assert_eq!(
+            format!("{err}"),
+            "remote URLs cannot be configured in file directly or indirectly included by includeIf.hasconfig:remote.*.url"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn include_unknown_condition_is_silently_false() {
+        let (_guard, dir, git_dir) = write_include_repo("unknown");
+        std::fs::write(dir.join("u.conf"), "[test]\n\tu = 1\n").unwrap();
+        let main = dir.join("main.conf");
+        std::fs::write(
+            &main,
+            format!("[includeIf \"frobnicate:everything\"]\n\tpath = {}\n", dir.join("u.conf").display()),
+        )
+        .unwrap();
+        let cfg = ConfigSet::from_file_with(&main, &include_ctx(&git_dir, None, None)).unwrap();
+        assert_eq!(cfg.get("test", "u"), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn include_worktree_matches_and_bare_is_false() {
+        let (_guard, dir, git_dir) = write_include_repo("worktree");
+        std::fs::write(dir.join("w.conf"), "[test]\n\tw = 1\n").unwrap();
+        let wt = dir.join("wt");
+        std::fs::create_dir_all(&wt).unwrap();
+        let main = dir.join("main.conf");
+        std::fs::write(
+            &main,
+            format!(
+                "[includeIf \"worktree:{}\"]\n\tpath = {}\n[includeIf \"worktree:{}/\"]\n\tpath = {}\n",
+                wt.display(),
+                dir.join("w.conf").display(),
+                wt.display(),
+                dir.join("w.conf").display()
+            ),
+        )
+        .unwrap();
+        let cfg = ConfigSet::from_file_with(&main, &include_ctx(&git_dir, Some(&wt), None)).unwrap();
+        assert_eq!(cfg.get("test", "w"), Some("1"));
+        // Bare repos have no worktree: never matches (t/t1305 worktree-bare).
+        let cfg = ConfigSet::from_file_with(&main, &include_ctx(&git_dir, None, None)).unwrap();
+        assert_eq!(cfg.get("test", "w"), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn include_depth_overflow_dies_c_exactly() {
+        let (_guard, dir, _git) = write_include_repo("depth");
+        for i in 0..12 {
+            let next = if i < 11 {
+                format!("[include]\n\tpath = {}\n", dir.join(format!("c{}.conf", i + 1)).display())
+            } else {
+                "[user]\n\tname = deep\n".to_string()
+            };
+            std::fs::write(dir.join(format!("c{i}.conf")), next).unwrap();
+        }
+        let err = ConfigSet::from_file(&dir.join("c0.conf")).unwrap_err();
+        assert!(
+            matches!(err, ConfigError::IncludeDepth { limit: 10, .. }),
+            "unexpected error: {err:?}"
+        );
+        // Byte-shape of C's `include_depth_advice` die (fatal prefix added
+        // by the surface).
+        let text = format!("{err}");
+        assert!(text.starts_with("exceeded maximum include depth (10) while including\n\t"));
+        assert!(text.contains("\nfrom\n\t"));
+        assert!(text.ends_with("\nThis might be due to circular includes."));
+        assert!(text.contains("c11.conf"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn include_direct_cycle_reports_cycle_error() {
+        let dir = std::env::temp_dir().join(format!("git-config-cycle2-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.conf");
+        let b = dir.join("b.conf");
+        std::fs::write(&a, format!("[include]\n\tpath = {}\n", b.display())).unwrap();
+        std::fs::write(&b, format!("[include]\n\tpath = {}\n", a.display())).unwrap();
+        let err = ConfigSet::from_file(&a).unwrap_err();
+        assert!(matches!(err, ConfigError::IncludeCycle(_)));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn include_missing_file_is_skipped_like_c() {
+        let (_guard, dir, _git) = write_include_repo("missing");
+        let main = dir.join("main.conf");
+        std::fs::write(
+            &main,
+            "[include]\n\tpath = /nonexistent-xyz-git-rs.conf\n[user]\n\tname = bob\n",
+        )
+        .unwrap();
+        let cfg = ConfigSet::from_file(&main).unwrap();
+        assert_eq!(cfg.get("user", "name"), Some("bob"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn include_diamond_reprocesses_without_false_cycle() {
+        // a → {b, c}, b → d, c → d: d is visited twice (like C), no error.
+        let (_guard, dir, _git) = write_include_repo("diamond");
+        let p = |n: &str| dir.join(n).display().to_string();
+        std::fs::write(dir.join("d.conf"), "[test]\n\td = 1\n").unwrap();
+        std::fs::write(dir.join("b.conf"), format!("[include]\n\tpath = {}\n", p("d.conf"))).unwrap();
+        std::fs::write(dir.join("c.conf"), format!("[include]\n\tpath = {}\n", p("d.conf"))).unwrap();
+        std::fs::write(
+            dir.join("a.conf"),
+            format!("[include]\n\tpath = {}\n[include]\n\tpath = {}\n", p("b.conf"), p("c.conf")),
+        )
+        .unwrap();
+        let cfg = ConfigSet::from_file(&dir.join("a.conf")).unwrap();
+        assert_eq!(cfg.get("test", "d"), Some("1"));
+        // Processed twice, like C (no memoization across siblings).
+        assert_eq!(cfg.get_all("test", "d"), vec!["1", "1"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn wildmatch_unit_matrix() {
+        let t = super::wildmatch;
+        assert!(t("**/foo/**", "/x/foo/.git", false));
+        assert!(!t("**/foo/**", "/x/foobar/.git", false));
+        assert!(t("**/FOO/**", "/x/foo/", true));
+        assert!(!t("**/FOO/**", "/x/foo/", false));
+        assert!(t("?oo-*/**", "foo-branch/a/b/c", false));
+        assert!(!t("?oo-*/**", "foo-branch", false)); // trailing `/**` needs the slash
+        assert!(t("https://*/bar/baz", "https://foo/bar/baz", false));
+        assert!(!t("https://*/bar/baz", "https://foo/a/bar/baz", false));
+        assert!(t("https:/**", "https://foo/bar/baz", false));
+        assert!(t("[a-z]oo", "foo", false));
+        assert!(!t("[a-z]oo", "Foo", false));
+        assert!(t("[!a]oo", "boo", false));
+        assert!(!t("*.git", "a/b.git", false));
+        assert!(t("*.git", "a.git", false));
     }
 }
 

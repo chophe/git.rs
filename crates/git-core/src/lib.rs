@@ -113,9 +113,10 @@ pub struct Repository {
 impl Repository {
     /// Discover a repository starting from `start`, applying `env` overrides.
     pub fn discover_from(start: &Path, env: &RepoEnv) -> Result<Repository, RepoError> {
-        let git_dir = match &env.git_dir {
+        let (git_dir, git_dir_verbatim) = match &env.git_dir {
             Some(g) => {
-                let candidate = canonicalize_preserve(&make_absolute(start, g));
+                let verbatim = make_absolute(start, g);
+                let candidate = canonicalize_preserve(&verbatim);
                 // An explicit override must be a valid git directory
                 // (matching C git's validation of GIT_DIR).
                 if !candidate.is_dir()
@@ -124,11 +125,12 @@ impl Repository {
                 {
                     return Err(RepoError::NotARepository(g.to_string_lossy().into_owned()));
                 }
-                candidate
+                (candidate, verbatim)
             }
             None => {
                 let found = find_git_dir(start)?.ok_or(RepoError::NotFound)?;
-                canonicalize_preserve(&found)
+                let verbatim = found.clone();
+                (canonicalize_preserve(&found), verbatim)
             }
         };
 
@@ -159,6 +161,9 @@ impl Repository {
                 git_dir: git_dir.clone(),
                 commondir: common_dir.clone(),
                 worktree: hint,
+                // Keep the pre-canonicalization form: C matches `gitdir:`
+                // conditions against the unresolved path too (symlinks).
+                git_dir_verbatim: Some(git_dir_verbatim),
             };
             git_config::ConfigSet::load_repo_scopes(&scopes)?
         };
