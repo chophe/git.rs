@@ -19,12 +19,15 @@ impl Command for Log {
 
     fn run(&self, ctx: &RepoContext, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
         let mut format = Format::Medium;
+        let mut format_raw: Option<String> = None;
         let mut date_mode = git_pretty::date::DateMode::Default;
         let mut tips: Vec<Oid> = Vec::new();
         let mut hidden: Vec<Oid> = Vec::new();
         let mut paths: Vec<String> = Vec::new();
         let mut negate = false;
         let mut after_dashdash = false;
+        let mut walk_reflogs = false;
+        let mut reflog_refs: Vec<String> = Vec::new();
         let mut opts = RevOptions::default();
         let repo = ctx.repository()?;
         let odb = Odb::from_repo(&repo).map_err(CommandError::from)?;
@@ -38,6 +41,34 @@ impl Command for Log {
                 }
             }
         };
+
+        /// Collect refnames under `prefix` (for `-g` walks).
+        fn add_ref_names(prefix: &str, repo: &git_core::Repository) -> Vec<String> {
+            let store = git_refs::RefStore::from_repo(repo);
+            store.list().into_iter().map(|(n, _)| n).filter(|n| n.starts_with(prefix)).collect()
+        }
+
+        /// Glob refs/heads/ by short-name pattern (C `--branches=<pattern>`).
+        fn add_branch_pattern(
+            pat: &str,
+            repo: &git_core::Repository,
+            odb: &Odb,
+            tips: &mut Vec<Oid>,
+            names: &mut Vec<String>,
+        ) {
+            let store = git_refs::RefStore::from_repo(repo);
+            for (name, oid) in store.list() {
+                let Some(short) = name.strip_prefix("refs/heads/") else { continue };
+                if git_attributes::wildmatch(pat, short, 0) == git_attributes::WM_MATCH
+                    || git_attributes::wildmatch(pat, &name, 0) == git_attributes::WM_MATCH
+                {
+                    // C resolves the tip through the odb for log walks.
+                    let _ = odb;
+                    tips.push(oid);
+                    names.push(name);
+                }
+            }
+        }
 
         let mut ai = 0usize;
         while ai < args.len() {
@@ -58,12 +89,14 @@ impl Command for Log {
                 "--date-order" => opts.order = git_revision::rev_info::Order::Date,
                 s if s.starts_with("--pretty=") => {
                     let spec = &s["--pretty=".len()..];
+                    format_raw = Some(spec.to_string());
                     format = Format::parse(spec).ok_or_else(|| {
                         CommandError::fatal(format!("fatal: invalid --pretty format: {spec}"))
                     })?;
                 }
                 "--pretty" | "--format" => format = Format::Medium,
                 s if s.starts_with("--format=") => {
+                    format_raw = Some(s["--format=".len()..].to_string());
                     format = Format::UserTerminated(s["--format=".len()..].to_string());
                 }
                 s if s.starts_with("--date=") => {
@@ -88,10 +121,43 @@ impl Command for Log {
                 s if s.starts_with("--skip=") => {
                     opts.skip = s["--skip=".len()..].parse().unwrap_or(0);
                 }
-                "--all" => add_refs("refs/", &mut tips, &repo),
-                "--branches" => add_refs("refs/heads/", &mut tips, &repo),
-                "--tags" => add_refs("refs/tags/", &mut tips, &repo),
-                "--remotes" => add_refs("refs/remotes/", &mut tips, &repo),
+                "--all" => {
+                    if walk_reflogs {
+                        reflog_refs.extend(add_ref_names("refs/", &repo));
+                    } else {
+                        add_refs("refs/", &mut tips, &repo)
+                    }
+                }
+                "--branches" => {
+                    if walk_reflogs {
+                        reflog_refs.extend(add_ref_names("refs/heads/", &repo));
+                    } else {
+                        add_refs("refs/heads/", &mut tips, &repo)
+                    }
+                }
+                s if s.starts_with("--branches=") => {
+                    let pat = &s["--branches=".len()..];
+                    if walk_reflogs {
+                        add_branch_pattern(pat, &repo, &odb, &mut tips, &mut reflog_refs);
+                    } else {
+                        add_branch_pattern(pat, &repo, &odb, &mut tips, &mut Vec::new());
+                    }
+                }
+                "--tags" => {
+                    if walk_reflogs {
+                        reflog_refs.extend(add_ref_names("refs/tags/", &repo));
+                    } else {
+                        add_refs("refs/tags/", &mut tips, &repo)
+                    }
+                }
+                "--remotes" => {
+                    if walk_reflogs {
+                        reflog_refs.extend(add_ref_names("refs/remotes/", &repo));
+                    } else {
+                        add_refs("refs/remotes/", &mut tips, &repo)
+                    }
+                }
+                "-g" | "--walk-reflogs" => walk_reflogs = true,
                 s if s.starts_with("--glob=") => {
                     let mut pat = s["--glob=".len()..].to_string();
                     if !pat.starts_with("refs/") {
@@ -117,6 +183,12 @@ impl Command for Log {
                     return Err(CommandError::usage(format!("log: option '{s}' not supported")));
                 }
                 s => {
+                    if walk_reflogs && !s.contains("..") && !s.starts_with('^') {
+                        // Reflog walk: positionals are refnames (dwimmed
+                        // later), never resolved to oids here.
+                        reflog_refs.push(s.to_string());
+                        continue;
+                    }
                     if let Some(rest) = s.strip_prefix('^') {
                         let oid = crate::resolve_arg(&repo, rest)?;
                         hidden.push(oid);
@@ -162,8 +234,14 @@ impl Command for Log {
             }
         }
 
-        if tips.is_empty() {
+        if tips.is_empty() && !walk_reflogs {
             tips.push(crate::resolve_arg(&repo, "HEAD")?);
+        }
+
+        // Reflog walk (`-g`): one format line per reflog entry,
+        // newest-first per ref (C `cmd_log_reflog`).
+        if walk_reflogs {
+            return walk_reflog_entries(ctx, &repo, &odb, reflog_refs, format_raw.as_deref(), &paths, out);
         }
 
         let mut loader = |oid: &Oid| -> Option<git_object::Commit> {
@@ -211,6 +289,196 @@ impl Command for Log {
                 .map_err(|e| CommandError::error(e.to_string()))?;
         }
         Ok(())
+    }
+}
+
+/// Reflog walk for `log -g` (C `cmd_log_reflog`): dwim each refname,
+/// print one format line per entry, newest-first. Refs are walked in
+/// sorted order; callers that need C's date ordering sort downstream
+/// (`t/t1410` does exactly that for the multi-branch case).
+fn walk_reflog_entries(
+    _ctx: &RepoContext,
+    repo: &git_core::Repository,
+    odb: &Odb,
+    refs: Vec<String>,
+    format_raw: Option<&str>,
+    paths: &[String],
+    out: &mut dyn Write,
+) -> Result<(), CommandError> {
+    let fmt = format_raw.unwrap_or("%gd %gs");
+    let mut names: Vec<String> = Vec::new();
+    if refs.is_empty() {
+        names.push("HEAD".to_string());
+    } else {
+        names.extend(refs);
+    }
+    // Dwim short names (`one/two` -> `refs/heads/one/two`) through the
+    // same helper the `reflog` command uses; unresolvable names die like
+    // C's ambiguous-argument fatal.
+    let mut dwimmed: Vec<String> = Vec::new();
+    for r in &names {
+        match crate::reflog::dwim_log(repo, r) {
+            Some(name) => dwimmed.push(name),
+            None => {
+                crate::resolve_arg(repo, r).map(|_| ())?;
+                // Resolves but has no log: prints nothing (C shows an
+                // empty walk for log-less refs).
+                continue;
+            }
+        }
+    }
+    dwimmed.sort();
+    dwimmed.dedup();
+    for name in &dwimmed {
+        let entries = git_refs::reflog::read_all(&repo.git_dir, name, repo.hash_algo);
+        for (i, e) in entries.iter().rev().enumerate() {
+            if !paths.is_empty() && !commit_touches_paths(odb, &e.new, paths, repo.hash_algo) {
+                continue;
+            }
+            let line = expand_reflog_format(fmt, repo, odb, name, i, e);
+            writeln!(out, "{line}").map_err(|e| CommandError::fatal(e.to_string()))?;
+        }
+    }
+    Ok(())
+}
+
+/// Expand a `--format=` string for one reflog entry. `%gd`/`%gD` are the
+/// (shortened) `ref@{n}` selector, `%gs` the reflog subject; the commit
+/// placeholders describe the entry's new oid when it is a commit.
+fn expand_reflog_format(
+    fmt: &str,
+    repo: &git_core::Repository,
+    odb: &Odb,
+    refname: &str,
+    n: usize,
+    e: &git_refs::reflog::ReflogEntry,
+) -> String {
+    let info = odb
+        .read(&e.new)
+        .ok()
+        .and_then(|o| {
+            if o.kind == git_object::ObjectKind::Commit {
+                git_pretty::CommitInfo::parse(e.new, &o.data, repo.hash_algo)
+            } else {
+                None
+            }
+        });
+    let short_ref = shorten_ref(refname);
+    let mut out = String::new();
+    let chars: Vec<char> = fmt.chars().collect();
+    let mut i = 0usize;
+    while i < chars.len() {
+        if chars[i] != '%' || i + 1 >= chars.len() {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        let c = chars[i + 1];
+        match c {
+            'g' if i + 2 < chars.len() => {
+                match chars[i + 2] {
+                    'd' | 'D' => out.push_str(&format!("{short_ref}@{{{n}}}")),
+                    's' => out.push_str(&e.message),
+                    _ => {}
+                }
+                i += 3;
+            }
+            'H' => {
+                out.push_str(&info.as_ref().map(|c| c.oid.to_string()).unwrap_or_default());
+                i += 2;
+            }
+            'h' => {
+                out.push_str(&info.as_ref().map(|c| short_hex(&c.oid, 7)).unwrap_or_default());
+                i += 2;
+            }
+            's' => {
+                out.push_str(&info.as_ref().map(|c| first_subject(&c.message)).unwrap_or_default());
+                i += 2;
+            }
+            'b' => {
+                out.push_str(&info.as_ref().map(|c| commit_body(&c.message)).unwrap_or_default());
+                i += 2;
+            }
+            'B' => {
+                if let Some(c) = info.as_ref() {
+                    out.push_str(&String::from_utf8_lossy(&c.message));
+                }
+                i += 2;
+            }
+            'a' | 'c' if i + 2 < chars.len() => {
+                let sub = chars[i + 2];
+                let ident = if c == 'a' { info.as_ref().map(|c| &c.author) } else { info.as_ref().map(|c| &c.committer) };
+                out.push_str(&render_ident_field(ident, sub));
+                i += 3;
+            }
+            'n' => {
+                out.push('\n');
+                i += 2;
+            }
+            '%' => {
+                out.push('%');
+                i += 2;
+            }
+            'x' if i + 3 < chars.len() => {
+                let hex: String = chars[i + 2..i + 4].iter().collect();
+                if let Ok(b) = u8::from_str_radix(&hex, 16) {
+                    out.push(b as char);
+                }
+                i += 4;
+            }
+            _ => {
+                // Anything else (colors, decorations, `%C`, `%d`...):
+                // emit nothing, like the pretty engine's no-op arms.
+                if matches!(c, 'C' | 'w' | '<' | '>' | '(') && i + 2 < chars.len() && chars[i + 2] == '(' {
+                    if let Some(end) = chars[i..].iter().position(|&x| x == ')') {
+                        i += end + 1;
+                        continue;
+                    }
+                }
+                if c == 'C' && fmt[i + 2..].starts_with("reset") {
+                    i += 2 + "reset".len();
+                    continue;
+                }
+                i += 2;
+                if i < chars.len() && matches!(c, 'a' | 'c' | 'G') {
+                    i += 1;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Shorten a refname for `%gd`/`%gD` display (`refs/heads/x` -> `x`).
+fn shorten_ref(name: &str) -> &str {
+    name.strip_prefix("refs/heads/")
+        .or_else(|| name.strip_prefix("refs/tags/"))
+        .or_else(|| name.strip_prefix("refs/remotes/"))
+        .unwrap_or(name)
+}
+
+fn short_hex(oid: &Oid, len: usize) -> String {
+    oid.to_string().chars().take(len).collect()
+}
+
+fn first_subject(message: &[u8]) -> String {
+    String::from_utf8_lossy(message).lines().next().unwrap_or("").to_string()
+}
+
+fn commit_body(message: &[u8]) -> String {
+    let text = String::from_utf8_lossy(message);
+    let mut lines = text.lines();
+    let _ = lines.next();
+    lines.collect::<Vec<_>>().join("\n")
+}
+
+fn render_ident_field(ident: Option<&git_pretty::Ident>, sub: char) -> String {
+    let Some(id) = ident else { return String::new() };
+    match sub {
+        'n' => id.name.clone(),
+        'e' => id.email.clone(),
+        't' => id.ts.secs.to_string(),
+        _ => String::new(),
     }
 }
 
