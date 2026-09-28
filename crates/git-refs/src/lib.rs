@@ -251,6 +251,28 @@ pub fn validate_refname(name: &str) -> Result<(), RefError> {
     if name != "HEAD" && !name.starts_with("refs/") {
         return Err(RefError::InvalidName(name.to_string()));
     }
+    check_refname_components(name)
+}
+
+/// Validate a ref name the way `update-ref --stdin`, `reflog exists`, and
+/// `symbolic-ref` do (C `check_refname_format` with
+/// `REFNAME_ALLOW_ONELEVEL`): single-component names like `PSEUDOREF` or
+/// `ORIG_HEAD` are accepted alongside the full `refs/` hierarchy and
+/// `HEAD`. Everything else matches [`validate_refname`].
+pub fn validate_refname_allow_onelevel(name: &str) -> Result<(), RefError> {
+    if name == "@" {
+        return Err(RefError::InvalidName(name.to_string()));
+    }
+    if name != "HEAD" && !name.starts_with("refs/") && name.contains('/') {
+        return Err(RefError::InvalidName(name.to_string()));
+    }
+    check_refname_components(name)
+}
+
+/// Component character rules shared by both validators (C
+/// `check_or_sanitize_refname` component checks: `..`, `@{`, `.lock`,
+/// trailing/double slashes, `~^:?*[\\`, controls, spaces).
+fn check_refname_components(name: &str) -> Result<(), RefError> {
     if name.contains("..")
         || name.contains("@{")
         || name.contains(".lock")
