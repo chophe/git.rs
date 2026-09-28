@@ -143,6 +143,10 @@ pub struct ReflogEntry {
     pub ident: String,
     /// Opaque message (bytes after the tab; empty when the line has none).
     pub message: String,
+    /// Seconds-since-epoch parsed from the ident's timestamp field (0 when
+    /// the ident carries no parseable timestamp; C treats such entries as
+    /// ancient, i.e. they always lose the expiry comparison).
+    pub timestamp: i64,
 }
 
 /// Parse one `logs/<ref>` line; `None` for malformed lines (callers skip).
@@ -158,7 +162,15 @@ pub fn parse_line(line: &str, algo: HashAlgorithm) -> Option<ReflogEntry> {
     if ident.is_empty() {
         return None;
     }
-    Some(ReflogEntry { old, new, ident, message })
+    Some(ReflogEntry { old, new, timestamp: ident_timestamp(&ident), ident, message })
+}
+
+/// The seconds-since-epoch field of a committer ident
+/// (`Name <email> <ts> <tz>`); 0 when absent or unparseable.
+fn ident_timestamp(ident: &str) -> i64 {
+    let mut it = ident.rsplit(' ');
+    let _tz = it.next();
+    it.next().and_then(|t| t.parse::<i64>().ok()).unwrap_or(0)
 }
 
 /// All entries of `logs/<ref>` in file order (oldest first); missing files
@@ -171,6 +183,11 @@ pub fn read_all(git_dir: &Path, refname: &str, algo: HashAlgorithm) -> Vec<Reflo
 /// Append one entry to `logs/<ref>`, creating parent directories and opening
 /// append-only (C `log_ref_setup` create path + `log_ref_write_fd`).
 /// Callers check [`should_log_repo`] first; this writes unconditionally.
+///
+/// A stale *empty* directory at the log path (left behind when a `foo/bar`
+/// ref was deleted and `foo` is recreated, see `t/t1410` "stale dirs") is
+/// removed so the file can be created; C moves such dirs out of the way,
+/// which is observationally identical when they hold no entries.
 pub fn append(
     git_dir: &Path,
     refname: &str,
@@ -183,6 +200,7 @@ pub fn append(
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| RefError::Io(e.to_string()))?;
     }
+    remove_stale_empty_dir(&path);
     let mut f = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -191,6 +209,74 @@ pub fn append(
     f.write_all(format_line(old, new, committer, message).as_bytes())
         .map_err(|e| RefError::Io(format!("unable to append to '{}': {e}", path.display())))?;
     Ok(())
+}
+
+/// Remove `path` when it is an empty directory (best-effort).
+fn remove_stale_empty_dir(path: &Path) {
+    if path.is_dir() {
+        let empty = std::fs::read_dir(path)
+            .map(|mut rd| rd.next().is_none())
+            .unwrap_or(false);
+        if empty {
+            let _ = std::fs::remove_dir(path);
+        }
+    }
+}
+
+/// The single writer every ref-mutating command logs through (D-02): check
+/// the repository gating ([`should_log_repo`], the only place that reads
+/// `core.logallrefupdates`) and append when allowed. Failures to open the
+/// log are silently ignored, matching the historical call-site behavior.
+pub fn log_update(
+    repo: &Repository,
+    refname: &str,
+    old: &Oid,
+    new: &Oid,
+    committer: &str,
+    message: &str,
+) {
+    if should_log_repo(repo, refname) {
+        let _ = append(&repo.git_dir, refname, old, new, committer, message);
+    }
+}
+
+/// Delete a reflog (`logs/<ref>`), leaving parent directories in place
+/// (C `refs_delete_reflog` unlinks the file only).
+pub fn remove_log(git_dir: &Path, refname: &str) {
+    let _ = std::fs::remove_file(git_dir.join("logs").join(refname));
+}
+
+/// All reflog refnames under `logs/` of each given git dir, sorted and
+/// deduplicated. Callers pass the worktree git dirs they cover (own git dir
+/// plus the common dir for shared refs); linked worktrees' git dirs stay
+/// out unless the caller lists them (C `--single-worktree` vs `--all`).
+pub fn collect_logs(dirs: &[&Path]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for dir in dirs {
+        collect_one(&dir.join("logs"), "", &mut out);
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn collect_one(dir: &Path, prefix: &str, out: &mut Vec<String>) {
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let mut entries: Vec<_> = rd.flatten().collect();
+    entries.sort_by_key(|e| e.file_name());
+    for e in entries {
+        let name = e.file_name().to_string_lossy().into_owned();
+        // Lock files are not reflogs.
+        if name.ends_with(".lock") {
+            continue;
+        }
+        let full = if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") };
+        if e.path().is_dir() {
+            collect_one(&e.path(), &full, out);
+        } else {
+            out.push(full);
+        }
+    }
 }
 
 #[cfg(test)]
