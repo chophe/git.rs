@@ -74,6 +74,11 @@ fn lock_os_message(err: &std::io::Error) -> String {
 }
 
 /// An acquired dot-lock: `<path>.lock` exists and is owned by us.
+///
+/// The file handle is never held between calls (C keeps only one
+/// lockfile open at a time so large transactions cannot burst the open
+/// file limit, `t/t1400` "does not burst open file limit"): the lock is
+/// the `.lock` file's existence, writes reopen it briefly.
 pub struct LockFile {
     path: PathBuf,
     lock: PathBuf,
@@ -84,10 +89,11 @@ pub struct LockFile {
 impl LockFile {
     /// Create `<path>.lock`, failing when it already exists (a concurrent
     /// second writer gets [`RefError::LockContention`] naming the lock).
+    /// The handle is closed immediately; only the path is retained.
     pub fn acquire(path: &Path) -> Result<LockFile, RefError> {
         let lock = lock_path_for(path);
         match OpenOptions::new().write(true).create_new(true).open(&lock) {
-            Ok(file) => Ok(LockFile { path: path.to_path_buf(), lock, file: Some(file), committed: false }),
+            Ok(_) => Ok(LockFile { path: path.to_path_buf(), lock, file: None, committed: false }),
             Err(e) => Err(RefError::LockContention(create_detail(&lock, &e))),
         }
     }
@@ -103,11 +109,14 @@ impl LockFile {
     }
 
     /// Write content to the lock, fsyncing before it can be committed
-    /// (C `write_ref_to_lockfile` crash-safety).
+    /// (C `write_ref_to_lockfile` crash-safety). Reopens the lock file
+    /// briefly; no handle is retained.
     pub fn write_and_fsync(&mut self, content: &[u8]) -> Result<(), RefError> {
-        let file = self.file.as_mut().ok_or_else(|| {
-            RefError::Io(format!("lock '{}' is no longer open", self.lock.display()))
-        })?;
+        let mut file = OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&self.lock)
+            .map_err(|e| RefError::Io(format!("cannot write lock '{}': {e}", self.lock.display())))?;
         file.write_all(content)
             .map_err(|e| RefError::Io(format!("cannot write lock '{}': {e}", self.lock.display())))?;
         file.sync_all()
@@ -118,7 +127,11 @@ impl LockFile {
     /// Atomically publish the lock content (fsync, then rename).
     /// Consumes the lock so [`Drop`] cannot unlink the published file.
     pub fn commit(mut self) -> Result<(), RefError> {
-        if let Some(file) = self.file.as_mut() {
+        {
+            let file = OpenOptions::new()
+                .read(true)
+                .open(&self.lock)
+                .map_err(|e| RefError::Io(format!("cannot fsync lock '{}': {e}", self.lock.display())))?;
             file.sync_all()
                 .map_err(|e| RefError::Io(format!("cannot fsync lock '{}': {e}", self.lock.display())))?;
         }
