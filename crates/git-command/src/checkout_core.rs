@@ -249,36 +249,6 @@ pub(crate) fn update_orig_head(repo: &git_core::Repository, old_head: Option<Oid
     }
 }
 
-/// Whether ref updates should be logged (`core.logallrefupdates`, default
-/// true except in bare repos).
-pub(crate) fn log_all_ref_updates(repo: &git_core::Repository) -> bool {
-    repo.config.get_bool("core", "logallrefupdates").unwrap_or(!repo.bare)
-}
-
-/// Append one line to `logs/<refname>` (creating parent directories).
-pub(crate) fn reflog_append(
-    repo: &git_core::Repository,
-    refname: &str,
-    old: &Oid,
-    new: &Oid,
-    ident: &str,
-    message: &str,
-) {
-    let (who, when) = match ident.find('>') {
-        Some(gt) => (&ident[..=gt], ident[gt + 1..].trim()),
-        None => (ident, ""),
-    };
-    let line = format!("{old} {new} {who} {when}\t{message}\n");
-    let path = repo.git_dir.join("logs").join(refname);
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    use std::io::Write as _;
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
-        let _ = f.write_all(line.as_bytes());
-    }
-}
-
 /// The committer ident line for reflog entries.
 pub(crate) fn committer_ident(repo: &git_core::Repository) -> Result<String, CommandError> {
     crate::ident::user_ident(repo, false)
@@ -1050,14 +1020,15 @@ pub(crate) fn new_branch_ref(name: &str) -> Result<String, CommandError> {
     Ok(full)
 }
 
-/// The previous branch from `logs/HEAD` ("checkout: moving from X to Y" —
-/// returns X of the newest such entry), for `checkout -` / `switch -`.
+/// The previous branch from the HEAD reflog ("checkout: moving from X to
+/// Y" — returns X of the newest such entry), for `checkout -` /
+/// `switch -`. Reads through the shared reflog parser, so malformed
+/// lines are skipped rather than scanned raw.
 pub(crate) fn previous_branch(repo: &git_core::Repository) -> Option<String> {
-    let data = std::fs::read(repo.git_dir.join("logs/HEAD")).ok()?;
-    let text = String::from_utf8_lossy(&data);
-    for line in text.lines().rev() {
-        if let Some(idx) = line.find("checkout: moving from ") {
-            let rest = &line[idx + "checkout: moving from ".len()..];
+    let entries = git_refs::reflog::read_all(&repo.git_dir, "HEAD", repo.hash_algo);
+    for entry in entries.iter().rev() {
+        if let Some(idx) = entry.message.find("checkout: moving from ") {
+            let rest = &entry.message[idx + "checkout: moving from ".len()..];
             if let Some(to) = rest.find(" to ") {
                 let from = rest[..to].trim().to_string();
                 if !from.is_empty() {

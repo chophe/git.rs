@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::ident;
 use crate::treeobj::{build, insert_path, TreeNode};
@@ -291,34 +291,29 @@ impl Command for Commit {
         refs.update(&ref_name, Some(&new_oid))
             .map_err(|e| CommandError::fatal(format!("fatal: {e}")))?;
 
-        // Reflog (HEAD + branch), when logallrefupdates allows.
+        // Reflog through the single writer (D-02): HEAD always logged,
+        // the branch ref only when its value actually changes (C skips a
+        // no-op ref update). Gating lives inside `log_update`; the
+        // reflog-action override applies verbatim (C `commit.c` honors
+        // `GIT_REFLOG_ACTION`).
         let subject = first_line(&message);
-        let action = {
-        let action = if a.amend {
-            format!("commit (amend): {subject}")
+        let prefix = if a.amend {
+            "commit (amend)"
         } else if is_merge {
-            format!("commit (merge): {subject}")
+            "commit (merge)"
         } else if head_oid.is_none() {
-            format!("commit (initial): {subject}")
+            "commit (initial)"
         } else {
-            format!("commit: {subject}")
+            "commit"
         };
-        action.trim_end().to_string()
-        };
-        if should_log_refs(&repo) {
+        let action =
+            crate::checkout_core::reflog_action(format!("{prefix}: {subject}").trim_end().to_string());
+        {
             let old = head_oid.unwrap_or(*algo.null_oid());
-            // HEAD is always logged; the branch ref's reflog is only written
-            // when its value actually changes (C skips a no-op ref update).
-            append_reflog(&repo.git_dir.join("logs/HEAD"), &old, &new_oid, &committer, &action);
+            git_refs::reflog::log_update(&repo, "HEAD", &old, &new_oid, &committer, &action);
             if let Some(sym) = &head_symref {
                 if old != new_oid {
-                    append_reflog(
-                        &repo.git_dir.join("logs").join(sym),
-                        &old,
-                        &new_oid,
-                        &committer,
-                        &action,
-                    );
+                    git_refs::reflog::log_update(&repo, sym, &old, &new_oid, &committer, &action);
                 }
             }
         }
@@ -773,25 +768,4 @@ fn short_oid(oid: &Oid) -> String {
 
 fn first_line(msg: &str) -> String {
     msg.lines().next().unwrap_or("").to_string()
-}
-
-fn should_log_refs(repo: &git_core::Repository) -> bool {
-    repo.config.get_bool("core", "logallrefupdates").unwrap_or(!repo.bare)
-}
-
-/// Append one line to a reflog file (creating parent directories).
-fn append_reflog(path: &PathBuf, old: &Oid, new: &Oid, ident_line: &str, message: &str) {
-    // Split "Name <email> ts tz" into "Name <email>" and " ts tz".
-    let (who, when) = match ident_line.find('>') {
-        Some(gt) => (&ident_line[..=gt], ident_line[gt + 1..].trim()),
-        None => (ident_line, ""),
-    };
-    let line = format!("{old} {new} {who} {when}\t{message}\n");
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    use std::io::Write as _;
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
-        let _ = f.write_all(line.as_bytes());
-    }
 }

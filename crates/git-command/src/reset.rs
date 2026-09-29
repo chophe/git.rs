@@ -572,14 +572,16 @@ fn move_head(
             checkout_core::write_head_detached(repo, target)?;
         }
     }
-    if checkout_core::log_all_ref_updates(repo) {
-        let ident = checkout_core::committer_ident(repo)?;
+    // Single-writer reflog (D-02): HEAD always attempted, the branch
+    // only when its value actually changes; gating lives inside
+    // `log_update`.
+    if let Ok(ident) = checkout_core::committer_ident(repo) {
         let old = head.oid.unwrap_or(*repo.hash_algo.null_oid());
         let msg = checkout_core::reflog_action(format!("reset: moving to {rev}"));
-        checkout_core::reflog_append(repo, "HEAD", &old, target, &ident, &msg);
+        git_refs::reflog::log_update(repo, "HEAD", &old, target, &ident, &msg);
         if let Some(sym) = head.symref {
             if old != *target {
-                checkout_core::reflog_append(repo, &sym, &old, target, &ident, &msg);
+                git_refs::reflog::log_update(repo, &sym, &old, target, &ident, &msg);
             }
         }
     }

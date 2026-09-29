@@ -287,7 +287,7 @@ fn resolves_as_rev(ctx: &RepoContext, arg: &str) -> bool {
     crate::resolve_arg(&repo, at).is_ok()
 }
 
-/// Resolve `-` to the previous branch via logs/HEAD.
+/// Resolve `-` to the previous branch via the HEAD reflog.
 fn resolve_dash(repo: &git_core::Repository, arg: &str) -> String {
     if arg == "-" {
         if let Some(prev) = checkout_core::previous_branch(repo) {
@@ -325,7 +325,7 @@ fn switch_branch(
     let Some(raw_arg) = arg else {
         if a.new_branch.is_some() {
             // `checkout -b new` / `switch -c new`: create at HEAD.
-            return create_and_switch(ctx, &repo, &odb, a, NewBranchStart::Head, out, mode);
+            return create_and_switch(ctx, &repo, &odb, a, NewBranchStart::Head, "HEAD", out, mode);
         }
         if a.detach {
             // Detach at HEAD.
@@ -353,12 +353,14 @@ fn switch_branch(
         if a.new_branch.is_some() {
             // `-b`/`-B` with an explicit start point that is a branch.
             let up = arg.strip_prefix("refs/heads/").unwrap_or(arg).to_string();
+            let display = up.clone();
             return create_and_switch(
                 ctx,
                 &repo,
                 &odb,
                 a,
                 NewBranchStart::Commit { upstream: Some(up), oid: tip },
+                &display,
                 out,
                 mode,
             );
@@ -413,6 +415,7 @@ fn switch_branch(
             &odb,
             a,
             NewBranchStart::Commit { upstream: None, oid: commit_oid },
+            arg,
             out,
             mode,
         );
@@ -525,6 +528,10 @@ fn create_and_switch(
     odb: &Odb,
     a: &CheckoutArgs,
     start: NewBranchStart,
+    // The start revision as displayed in the branch reflog
+    // (`branch: Created from <display>`; C `create_branch` uses the
+    // user's start name verbatim, defaulting to `HEAD`).
+    start_display: &str,
     out: &mut dyn Write,
     mode: Mode,
 ) -> Result<(), CommandError> {
@@ -554,9 +561,24 @@ fn create_and_switch(
             "fatal: a branch named '{name}' already exists"
         )));
     }
+    let old = store.resolve(&full).unwrap_or(*repo.hash_algo.null_oid());
     store
         .update(&full, Some(&start_oid))
         .map_err(|e| CommandError::fatal(format!("fatal: {e}")))?;
+    // Branch creation/reset logs through the single writer (C
+    // `create_branch`: `branch: Created from <start>` for a new branch,
+    // `branch: Reset to <start>` for a forced reset; a no-op reset
+    // writes nothing).
+    if !existed || old != start_oid {
+        let msg = if existed {
+            format!("branch: Reset to {start_display}")
+        } else {
+            format!("branch: Created from {start_display}")
+        };
+        if let Ok(ident) = checkout_core::committer_ident(repo) {
+            git_refs::reflog::log_update(repo, &full, &old, &start_oid, &ident, &msg);
+        }
+    }
     // --track from a local start point records upstream config + message.
     if a.track == TrackOpt::Track {
         if let Some(up) = upstream.as_deref() {
@@ -671,10 +693,11 @@ fn switch_to_branch(
         old_desc.as_deref().unwrap_or("(invalid)")
     ));
     checkout_core::write_head_symref(repo, full_ref)?;
-    if checkout_core::log_all_ref_updates(repo) {
-        let ident = checkout_core::committer_ident(repo)?;
+    // Single-writer reflog (D-02): gating lives inside `log_update`;
+    // a missing ident skips the entry (C ignores reflog failures).
+    if let Ok(ident) = checkout_core::committer_ident(repo) {
         let old_oid = head.oid.unwrap_or(*algo.null_oid());
-        checkout_core::reflog_append(repo, "HEAD", &old_oid, tip, &ident, &msg);
+        git_refs::reflog::log_update(repo, "HEAD", &old_oid, tip, &ident, &msg);
     }
 
     if !a.quiet {
@@ -829,10 +852,9 @@ fn detach_head(
         old_desc.as_deref().unwrap_or("(invalid)")
     ));
     checkout_core::write_head_detached(repo, oid)?;
-    if checkout_core::log_all_ref_updates(repo) {
-        let ident = checkout_core::committer_ident(repo)?;
+    if let Ok(ident) = checkout_core::committer_ident(repo) {
         let old_oid = head.oid.unwrap_or(*algo.null_oid());
-        checkout_core::reflog_append(repo, "HEAD", &old_oid, oid, &ident, &msg);
+        git_refs::reflog::log_update(repo, "HEAD", &old_oid, oid, &ident, &msg);
     }
 
     if !a.quiet {
