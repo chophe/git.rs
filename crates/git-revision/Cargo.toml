@@ -12,6 +12,7 @@ git-object = { path = "../git-object" }
 git-core = { path = "../git-core" }
 git-odb = { path = "../git-odb" }
 git-refs = { path = "../git-refs" }
+git-date = { path = "../git-date" }
 
 [dev-dependencies]
 proptest = "1"
