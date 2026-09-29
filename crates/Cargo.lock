@@ -298,6 +298,7 @@ name = "git-revision"
 version = "0.1.0"
 dependencies = [
  "git-core",
+ "git-date",
  "git-hash",
  "git-object",
  "git-odb",
