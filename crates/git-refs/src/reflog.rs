@@ -97,6 +97,17 @@ pub fn should_log_repo(repo: &Repository, refname: &str) -> bool {
     should_log(cfg, refname, repo.bare)
 }
 
+/// Whether an update appends to `logs/<ref>`: always when the log file
+/// already exists (C appends to a "touched" log whatever the gating;
+/// `t/t1400` "logged by touch"), otherwise per [`should_log_repo`].
+/// `--create-reflog` callers bypass this (they always append).
+pub fn should_append(repo: &Repository, refname: &str) -> bool {
+    if repo.git_dir.join("logs").join(refname).is_file() {
+        return true;
+    }
+    should_log_repo(repo, refname)
+}
+
 /// Default reflog expiry windows in days, probed against the tree C binary
 /// on 2026-09-28 (research open question O1; `t/` wins ties, but `t/t1410`
 /// only ever passes explicit `--expire`, so the binary + `reflog.h` decide).
@@ -147,6 +158,9 @@ pub struct ReflogEntry {
     /// the ident carries no parseable timestamp; C treats such entries as
     /// ancient, i.e. they always lose the expiry comparison).
     pub timestamp: i64,
+    /// Minutes-east-of-UTC parsed from the ident's timezone field (0 when
+    /// absent or unparseable; used for `@{date}` warning display).
+    pub tz_offset: i32,
 }
 
 /// Parse one `logs/<ref>` line; `None` for malformed lines (callers skip).
@@ -162,15 +176,33 @@ pub fn parse_line(line: &str, algo: HashAlgorithm) -> Option<ReflogEntry> {
     if ident.is_empty() {
         return None;
     }
-    Some(ReflogEntry { old, new, timestamp: ident_timestamp(&ident), ident, message })
+    let (timestamp, tz_offset) = ident_timestamp_tz(&ident);
+    Some(ReflogEntry { old, new, timestamp, tz_offset, ident, message })
 }
 
-/// The seconds-since-epoch field of a committer ident
-/// (`Name <email> <ts> <tz>`); 0 when absent or unparseable.
-fn ident_timestamp(ident: &str) -> i64 {
+/// Timestamp plus timezone of a committer ident.
+fn ident_timestamp_tz(ident: &str) -> (i64, i32) {
     let mut it = ident.rsplit(' ');
-    let _tz = it.next();
-    it.next().and_then(|t| t.parse::<i64>().ok()).unwrap_or(0)
+    let tz_s = it.next().unwrap_or("");
+    let ts_s = it.next().unwrap_or("");
+    let ts = ts_s.parse::<i64>().unwrap_or(0);
+    (ts, parse_tz_minutes(tz_s))
+}
+
+/// Parse a `±HHMM`/`±HH:MM` timezone into minutes east of UTC.
+fn parse_tz_minutes(s: &str) -> i32 {
+    let s = s.trim();
+    let (neg, digits) = match s.strip_prefix('-') {
+        Some(d) => (true, d),
+        None => (false, s.strip_prefix('+').unwrap_or(s)),
+    };
+    let digits: String = digits.chars().filter(|c| *c != ':').collect();
+    if digits.len() != 4 || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return 0;
+    }
+    let h: i32 = digits[..2].parse().unwrap_or(0);
+    let m: i32 = digits[2..].parse().unwrap_or(0);
+    if neg { -(h * 60 + m) } else { h * 60 + m }
 }
 
 /// All entries of `logs/<ref>` in file order (oldest first); missing files
@@ -223,10 +255,10 @@ fn remove_stale_empty_dir(path: &Path) {
     }
 }
 
-/// The single writer every ref-mutating command logs through (D-02): check
-/// the repository gating ([`should_log_repo`], the only place that reads
-/// `core.logallrefupdates`) and append when allowed. Failures to open the
-/// log are silently ignored, matching the historical call-site behavior.
+/// The single writer every ref-mutating command logs through (D-02):
+/// append when the log exists or the repository gating
+/// ([`should_append`]) allows it. Failures to open the log are silently
+/// ignored, matching the historical call-site behavior.
 pub fn log_update(
     repo: &Repository,
     refname: &str,
@@ -235,9 +267,24 @@ pub fn log_update(
     committer: &str,
     message: &str,
 ) {
-    if should_log_repo(repo, refname) {
+    if should_append(repo, refname) {
         let _ = append(&repo.git_dir, refname, old, new, committer, message);
     }
+}
+
+/// [`log_update`], but unconditional (C `REF_FORCE_CREATE_REFLOG` for
+/// `update-ref --create-reflog` and friends). Still the single writer:
+/// command layers must not call [`append`] directly (the plan's grep
+/// gate proves it).
+pub fn log_update_forced(
+    repo: &Repository,
+    refname: &str,
+    old: &Oid,
+    new: &Oid,
+    committer: &str,
+    message: &str,
+) {
+    let _ = append(&repo.git_dir, refname, old, new, committer, message);
 }
 
 /// Delete a reflog (`logs/<ref>`), leaving parent directories in place
