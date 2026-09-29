@@ -20,6 +20,12 @@ pub mod transaction;
 
 const MAX_SYMREF_DEPTH: usize = 10;
 
+/// C `is_per_worktree_ref`: `refs/worktree/`, `refs/bisect/` and
+/// `refs/rewritten/` live in the worktree's own git dir.
+fn is_per_worktree_ref(name: &str) -> bool {
+    name.starts_with("refs/worktree/") || name.starts_with("refs/bisect/") || name.starts_with("refs/rewritten/")
+}
+
 /// Errors from ref operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RefError {
@@ -149,9 +155,15 @@ impl RefStore {
         }
     }
 
-    /// Loose-ref path for `name` (always under the common dir, like C).
+    /// Loose-ref path for `name` (C files-backend placement: `HEAD`
+    /// and per-worktree refs live in the worktree git dir, everything
+    /// else in the common dir).
     pub(crate) fn loose_path(&self, name: &str) -> PathBuf {
-        self.common_dir.join(name)
+        if name == "HEAD" || is_per_worktree_ref(name) {
+            self.git_dir.join(name)
+        } else {
+            self.common_dir.join(name)
+        }
     }
 
     /// The common dir (transaction escape checks and the expire ref lock
@@ -164,6 +176,30 @@ impl RefStore {
     /// ref files (e.g. the `reflog expire` ref lock, C `lock_ref_oid_basic`).
     pub fn common_dir(&self) -> &Path {
         &self.common_dir
+    }
+
+    /// The worktree git dir (per-worktree `logs/` live here; C resolves
+    /// `@{...}` selectors against it).
+    pub fn git_dir(&self) -> &Path {
+        &self.git_dir
+    }
+
+    /// Follow symrefs to the terminal write location (depth-capped; C's
+    /// deref walk for `update-ref`). With `deref` false, or when the chain
+    /// cannot be followed, returns the name itself.
+    pub fn deref_name_opt(&self, name: &str, deref: bool) -> String {
+        if !deref {
+            return name.to_string();
+        }
+        let mut cur = name.to_string();
+        for _ in 0..MAX_SYMREF_DEPTH {
+            let content = match self.read_loose(&cur) {
+                Some(RefTarget::SymRef(next)) => next,
+                _ => return cur,
+            };
+            cur = content;
+        }
+        cur
     }
 
     /// Raw loose content without symref following (transaction layer).
@@ -179,9 +215,19 @@ impl RefStore {
         self.packed()?.get(name).copied()
     }
 
-    /// Read a loose ref file (oid or symref).
+    /// Packed refnames, for the transaction's D/F checks (C checks packed
+    /// refs too) and delete-time packed pruning.
+    pub(crate) fn packed_refs(&self) -> Option<Vec<String>> {
+        Some(self.packed()?.into_keys().collect())
+    }
+
+    /// Read a loose ref file (oid or symref). Per-worktree refs of OTHER
+    /// worktrees (sitting in the common dir) are invisible here, like C.
     fn read_loose(&self, name: &str) -> Option<RefTarget> {
         for dir in [&self.git_dir, &self.common_dir] {
+            if dir == &self.common_dir && self.git_dir != self.common_dir && is_per_worktree_ref(name) {
+                continue;
+            }
             let p = dir.join(name);
             let content = std::fs::read_to_string(&p).ok()?;
             let t = content.trim();
@@ -215,11 +261,44 @@ impl RefStore {
         Some(map)
     }
 
-    /// Walk the loose refs under `refs/`.
+    /// Walk the loose refs under `refs/`: the common dir fully, plus the
+    /// worktree git dir when it differs (its per-worktree refs). Common
+    /// per-worktree names stay out unless this IS the main worktree.
     fn list_loose(&self) -> Vec<(String, Oid)> {
         let mut out = Vec::new();
-        self.walk_refs(&self.common_dir.join("refs"), "", &mut out);
+        let main_view = self.git_dir == self.common_dir;
+        self.walk_refs_filtered(&self.common_dir.join("refs"), "", &mut out, main_view);
+        if !main_view {
+            self.walk_refs(&self.git_dir.join("refs"), "", &mut out);
+        }
         out
+    }
+
+    /// Walk refs, skipping per-worktree names unless `include_per_worktree`.
+    fn walk_refs_filtered(&self, dir: &Path, prefix: &str, out: &mut Vec<(String, Oid)>, include_per_worktree: bool) {
+        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let full = if prefix.is_empty() {
+                format!("refs/{name}")
+            } else {
+                format!("{prefix}/{name}")
+            };
+            if e.path().is_dir() {
+                // Prune per-worktree subtrees early when excluded.
+                if !include_per_worktree && is_per_worktree_ref(&format!("{full}/")) {
+                    continue;
+                }
+                self.walk_refs_filtered(&e.path(), &full, out, include_per_worktree);
+            } else {
+                if !include_per_worktree && is_per_worktree_ref(&full) {
+                    continue;
+                }
+                if let Some(RefTarget::Oid(oid)) = self.read_loose(&full) {
+                    out.push((full, oid));
+                }
+            }
+        }
     }
 
     fn walk_refs(&self, dir: &Path, prefix: &str, out: &mut Vec<(String, Oid)>) {
