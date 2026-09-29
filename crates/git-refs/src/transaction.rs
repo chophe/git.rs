@@ -45,6 +45,27 @@ pub enum TxnOp {
     Delete { name: String, old: Option<Oid>, deref: bool },
     /// Check only, no write.
     Verify { name: String, old: Oid },
+    /// Point a symref at `target` (C `symref-update`); `old_oid` is
+    /// compared against the resolved value, `old_target` against the
+    /// symref value itself, when present. In deref mode the chain is
+    /// followed and the resolved ref is rewritten (even a onelevel name
+    /// like C does for `symref-update sym other`); no-deref rewrites the
+    /// named symref literally.
+    SymrefUpdate {
+        name: String,
+        target: String,
+        old_oid: Option<Oid>,
+        old_target: Option<String>,
+        deref: bool,
+    },
+    /// Create a symref (C `symref-create`); fails when anything is present.
+    SymrefCreate { name: String, target: String, deref: bool },
+    /// Delete a symref literally (C `symref-delete`, no-deref only);
+    /// `old_target` is compared against the literal target when present.
+    SymrefDelete { name: String, old_target: Option<String> },
+    /// Check a symref literally (C `symref-verify`, no-deref only); no
+    /// `old_target` means the ref must not exist.
+    SymrefVerify { name: String, old_target: Option<String> },
 }
 
 impl TxnOp {
@@ -53,14 +74,26 @@ impl TxnOp {
             TxnOp::Set { name, .. }
             | TxnOp::Create { name, .. }
             | TxnOp::Delete { name, .. }
-            | TxnOp::Verify { name, .. } => name,
+            | TxnOp::Verify { name, .. }
+            | TxnOp::SymrefUpdate { name, .. }
+            | TxnOp::SymrefCreate { name, .. }
+            | TxnOp::SymrefDelete { name, .. }
+            | TxnOp::SymrefVerify { name, .. } => name,
         }
     }
 
     fn deref(&self) -> bool {
         match self {
-            TxnOp::Set { deref, .. } | TxnOp::Create { deref, .. } | TxnOp::Delete { deref, .. } => *deref,
+            TxnOp::Set { deref, .. }
+            | TxnOp::Create { deref, .. }
+            | TxnOp::Delete { deref, .. }
+            | TxnOp::SymrefUpdate { deref, .. }
+            | TxnOp::SymrefCreate { deref, .. } => *deref,
             TxnOp::Verify { .. } => true,
+            // Delete/verify of symrefs always address the symref itself
+            // (C passes the name literally; deref/no-deref only gates
+            // *whether* they run).
+            _ => false,
         }
     }
 
@@ -80,11 +113,49 @@ impl TxnOp {
             } else {
                 Expectation::At(*old)
             }),
+            TxnOp::SymrefUpdate { old_oid, .. } => old_oid.as_ref().map(|o| {
+                if o == null {
+                    Expectation::Absent
+                } else {
+                    Expectation::At(*o)
+                }
+            }),
+            TxnOp::SymrefCreate { .. } => Some(Expectation::Absent),
+            TxnOp::SymrefDelete { .. } => None,
+            // Bare `symref-verify` (no old target) asserts absence (C
+            // `ref_transaction_verify` with a null oid); anything present
+            // fails like a create conflict.
+            TxnOp::SymrefVerify { old_target: None, .. } => Some(Expectation::Absent),
+            TxnOp::SymrefVerify { .. } => None,
         }
     }
 
     fn is_write(&self) -> bool {
-        !matches!(self, TxnOp::Verify { .. })
+        !matches!(self, TxnOp::Verify { .. } | TxnOp::SymrefVerify { .. })
+    }
+
+    /// The literal symref-target expectation, if any.
+    fn expected_target(&self) -> Option<&str> {
+        match self {
+            TxnOp::SymrefUpdate { old_target, .. }
+            | TxnOp::SymrefDelete { old_target, .. }
+            | TxnOp::SymrefVerify { old_target, .. } => old_target.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// Whether this op writes a symref file (content `ref: <target>`).
+    fn symref_content(&self) -> Option<Vec<u8>> {
+        match self {
+            TxnOp::SymrefUpdate { target, .. } | TxnOp::SymrefCreate { target, .. } => {
+                Some(format!("ref: {target}\n").into_bytes())
+            }
+            _ => None,
+        }
+    }
+
+    fn is_delete(&self) -> bool {
+        matches!(self, TxnOp::Delete { .. } | TxnOp::SymrefDelete { .. })
     }
 }
 
@@ -111,6 +182,8 @@ struct Prepared {
     /// no-op for verify).
     content: Option<Vec<u8>>,
     is_delete: bool,
+    /// Packed entry to prune on commit (deletes only).
+    packed_prune: Option<String>,
 }
 
 /// An all-or-nothing batch over one [`RefStore`].
@@ -118,11 +191,14 @@ pub struct Transaction<'a> {
     store: &'a RefStore,
     ops: Vec<TxnOp>,
     prepared: Vec<Prepared>,
+    /// Every queued op name (C `transaction->refnames`), stashed at
+    /// `prepare` for the batch-internal D/F walk.
+    all_names: Vec<String>,
 }
 
 impl<'a> Transaction<'a> {
     pub fn begin(store: &'a RefStore) -> Transaction<'a> {
-        Transaction { store, ops: Vec::new(), prepared: Vec::new() }
+        Transaction { store, ops: Vec::new(), prepared: Vec::new(), all_names: Vec::new() }
     }
 
     pub fn queue(&mut self, op: TxnOp) {
@@ -137,16 +213,24 @@ impl<'a> Transaction<'a> {
     /// any `Err` leaves every ref byte-unchanged (held locks unlink on
     /// drop).
     pub fn prepare(&mut self) -> Result<(), RefError> {
-        // Names first (C validates before locking).
+        // Names first, with the `update-ref` one-level allowance (C
+        // `parse_refname` uses REFNAME_ALLOW_ONELEVEL): `PSEUDOREF`,
+        // `ORIG_HEAD` and friends are storable refs. The transaction
+        // backstop text matches C's name check (`refusing to update ref
+        // with bad name`); the batch parser rejects bad names earlier
+        // with `invalid ref format`.
         for op in &self.ops {
-            if let Err(e) = super::validate_refname(op.name()) {
+            if super::validate_refname_allow_onelevel(op.name()).is_err() {
                 return Err(RefError::Transaction(format!(
-                    "cannot lock ref '{}': {e}",
+                    "refusing to update ref with bad name '{}'",
                     op.name()
                 )));
             }
         }
-        // Duplicate ops in one batch are rejected (C: "multiple updates").
+        // Duplicate ops in one batch are rejected: exact name twins
+        // first (C `ref_update_reject_duplicates`), then write-target
+        // collisions through symrefs (C's symref-split duplicates, with
+        // the HEAD-specific wording).
         for i in 0..self.ops.len() {
             for other in &self.ops[..i] {
                 if other.name() == self.ops[i].name() {
@@ -157,28 +241,139 @@ impl<'a> Transaction<'a> {
                 }
             }
         }
-        // Batch-internal D/F collisions (C: "cannot process ... at the same time").
+        // Resolved write targets for the symref-split check (errors fall
+        // back to the literal name; they surface later if real).
+        let keys: Vec<String> = self
+            .ops
+            .iter()
+            .map(|op| {
+                Self::resolve_target(self.store, op).unwrap_or_else(|_| op.name().to_string())
+            })
+            .collect();
+        // A literal (no-deref) HEAD update collides with any update to
+        // HEAD's referent (C's HEAD-split duplicates; order-independent,
+        // and HEAD-specific: non-HEAD literal symref updates do not
+        // collide, probed on the tree binary).
+        if let Some(referent) = self.store.read_raw("HEAD").and_then(|r| match r {
+            RawRef::Symref(t) => Some(t),
+            _ => None,
+        }) {
+            for (i, op) in self.ops.iter().enumerate() {
+                if op.name() == "HEAD" && !op.deref() {
+                    for (j, other) in self.ops.iter().enumerate() {
+                        if i != j
+                            && Self::resolve_target(self.store, other)
+                                .unwrap_or_else(|_| other.name().to_string())
+                                == referent
+                        {
+                            return Err(RefError::Transaction(format!(
+                                "multiple updates for 'HEAD' (including one via its referent '{referent}') are not allowed"
+                            )));
+                        }
+                    }
+                }
+            }
+        }
         for i in 0..self.ops.len() {
             for j in (i + 1)..self.ops.len() {
+                if keys[i] != keys[j] {
+                    continue;
+                }
                 let (a, b) = (self.ops[i].name(), self.ops[j].name());
-                if is_path_prefix(a, b) || is_path_prefix(b, a) {
+                // A deref update through HEAD collides under the
+                // referent's name (C's HEAD-split wording).
+                if a == "HEAD" || b == "HEAD" {
                     return Err(RefError::Transaction(format!(
-                        "cannot process '{a}' and '{b}' at the same time"
+                        "multiple updates for '{}' (including one via symref 'HEAD') are not allowed",
+                        keys[i]
                     )));
                 }
+                // Name the symref side (literal symref file); fall back
+                // to the plain form when neither side is one.
+                let sym = if self.store.read_raw(a).is_some_and(|r| matches!(r, RawRef::Symref(_))) {
+                    a
+                } else if self.store.read_raw(b).is_some_and(|r| matches!(r, RawRef::Symref(_))) {
+                    b
+                } else {
+                    return Err(RefError::Transaction(format!(
+                        "multiple updates for ref '{}' not allowed",
+                        keys[i]
+                    )));
+                };
+                return Err(RefError::Transaction(format!(
+                    "multiple updates for '{}' (including one via symref '{}') are not allowed",
+                    keys[i], sym
+                )));
             }
         }
 
         let null: Oid = *self.store.algo.null_oid();
+        self.all_names = self.ops.iter().map(|op| op.name().to_string()).collect();
         for op in std::mem::take(&mut self.ops) {
             self.prepare_one(op, &null)?;
         }
         Ok(())
     }
 
+    /// Prepare each queued op independently, holding successful locks
+    /// and returning per-op rejections (C `ALLOW_FAILURE` semantics for
+    /// `--batch-updates`: one bad op rejects while the rest still land).
+    /// Survivors stay queued for [`commit`](Transaction::commit).
+    /// `ignorecase` selects the case-conflict categorization for lock
+    /// collisions (C checks `core.ignorecase` + a case-variant update).
+    pub fn prepare_lenient(&mut self, ignorecase: bool) -> Vec<OpRejection> {
+        self.all_names = self.ops.iter().map(|op| op.name().to_string()).collect();
+        let mut rejected = Vec::new();
+        for (index, op) in std::mem::take(&mut self.ops).into_iter().enumerate() {
+            let display = op.name().to_string();
+            match self.prepare_one_lenient(op, ignorecase) {
+                Ok(()) => {}
+                Err((detail, msg)) => rejected.push(OpRejection { index, display, detail, msg }),
+            }
+        }
+        rejected
+    }
+
+    /// One lenient op: like [`prepare_one`](Transaction::prepare_one) but
+    /// returning the C rejection class instead of dying.
+    fn prepare_one_lenient(&mut self, op: TxnOp, ignorecase: bool) -> Result<(), (String, &'static str)> {
+        let target = match Self::resolve_target(self.store, &op) {
+            Ok(t) => t,
+            Err(e) => return Err((e.to_string(), classify_detail(&e.to_string()))),
+        };
+        // Snapshot the pre-lock read for the exists-skip below; the full
+        // prepare_one re-reads under lock identically (single-threaded).
+        match self.prepare_one(op, &*self.store.algo.null_oid()) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                let detail = e.to_string();
+                // Case-insensitive lock collision (C `CASE_CONFLICT`):
+                // contention plus a case-variant sibling update.
+                if detail.contains("Unable to create") && ignorecase && self.has_case_variant(&target) {
+                    return Err((detail, "reference conflict due to case-insensitive filesystem"));
+                }
+                Err((detail.clone(), classify_detail(&detail)))
+            }
+        }
+    }
+
+    /// Whether another batch op targets a case-variant of `target`.
+    fn has_case_variant(&self, target: &str) -> bool {
+        let lower = target.to_ascii_lowercase();
+        self.all_names.iter().any(|n| n != target && n.to_ascii_lowercase() == lower)
+    }
+
     /// Publish every lock (all contents written first, then all renames).
     /// Consumes the transaction; `abort` (drop) unlinks instead.
     pub fn commit(mut self) -> Result<(), RefError> {
+        // Deletes prune the packed entry too (C drops packed refs on
+        // delete, so `show-ref --verify` stays silent afterwards).
+        // Collected before the drain below consumes `prepared`.
+        let prune: Vec<String> = self
+            .prepared
+            .iter()
+            .filter_map(|p| p.packed_prune.clone())
+            .collect();
         for p in &mut self.prepared {
             if p.is_delete {
                 // Unlink under the held lock; a missing file is already gone.
@@ -199,22 +394,55 @@ impl<'a> Transaction<'a> {
                 )));
             }
         }
+        // Deletes prune the packed entry too (C drops packed refs on
+        // delete): rewrite packed-refs without the deleted names.
+        if !prune.is_empty() {
+            let names: Vec<&str> = prune.iter().map(String::as_str).collect();
+            if let Err(e) =
+                super::packed::prune_entries(self.store.common_path(), self.store.algo, &names)
+            {
+                return Err(RefError::Transaction(format!("cannot prune packed-refs: {e}")));
+            }
+        }
         Ok(())
     }
 
     /// Abandon the batch, unlinking every held lock. (Dropping works too.)
-    pub fn abort(self) {}
+    pub fn abort(mut self) {
+        // Collect lock parent dirs, release the locks (unlinking the
+        // `.lock` files), then prune newly-empty dirs (C removes empty
+        // dirs on abort; `t/t1400` "empty directories are pruned...").
+        let mut dirs: Vec<std::path::PathBuf> = self
+            .prepared
+            .iter()
+            .filter_map(|p| p.lock.path().parent().map(|d| d.to_path_buf()))
+            .collect();
+        drop(std::mem::take(&mut self.prepared));
+        drop(std::mem::take(&mut self.ops));
+        // Deepest first so nested empties collapse fully; best-effort
+        // (non-empty dirs simply stay).
+        dirs.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
+        dirs.dedup();
+        for d in dirs {
+            let _ = std::fs::remove_dir(&d);
+        }
+    }
 
     /// Lock one op's target and validate it. Pushes onto `prepared`.
     fn prepare_one(&mut self, op: TxnOp, null: &Oid) -> Result<(), RefError> {
         let display = op.name().to_string();
-        let target = self.resolve_target(&op)?;
+        let target = Self::resolve_target(self.store, &op)?;
         let path = self.store.loose_path(&target);
 
-        // FS D/F: a child ref blocks creating/writing this path, and a
-        // blocking file ancestor blocks descending to it.
+        // Current value first: C (`lock_raw_ref`) skips the D/F verify
+        // when the ref was successfully read. Deletes always verify
+        // (a deleted `foo` must not strand `foo/bar`), but only against
+        // the filesystem, never the batch (t/t1404 df_test matrix).
+        let current = self.read_current(&target);
+        let current_exists = !matches!(current, Current::Missing);
         if op.is_write() {
-            self.check_df(&op, &target)?;
+            let check_extras = !op.is_delete() && !current_exists;
+            self.check_df(&op, &target, check_extras)?;
         }
 
         if let Some(dir) = path.parent() {
@@ -250,25 +478,34 @@ impl<'a> Transaction<'a> {
         // Current value under lock: loose first, then packed (loose wins on
         // read, so a packed fallback only matters when loose is missing).
         let current = self.read_current(&target);
-        self.check_expectation(&op, &current, null)?;
+        self.check_expectation(&op, &current, &target, null)?;
+        // Literal symref-target expectations (C compares the symref value
+        // itself for `symref-update/-delete/-verify` with an old target).
+        self.check_target_expectation(&op, &target)?;
 
         let (content, is_delete) = match &op {
             TxnOp::Set { new, .. } | TxnOp::Create { new, .. } => (Some(format!("{new}\n").into_bytes()), false),
-            TxnOp::Delete { .. } => (None, true),
-            TxnOp::Verify { .. } => (None, false),
+            TxnOp::Delete { .. } | TxnOp::SymrefDelete { .. } => (None, true),
+            TxnOp::Verify { .. } | TxnOp::SymrefVerify { .. } => (None, false),
+            TxnOp::SymrefUpdate { .. } | TxnOp::SymrefCreate { .. } => {
+                (op.symref_content(), false)
+            }
         };
-        self.prepared.push(Prepared { display, lock, content, is_delete });
+        // Deletes prune the packed entry too (C removes packed refs on
+        // delete); remembered for the commit phase.
+        let packed_prune = if op.is_delete() { Some(target.clone()) } else { None };
+        self.prepared.push(Prepared { display, lock, content, is_delete, packed_prune });
         Ok(())
     }
 
     /// Follow symrefs for deref ops (depth-capped); literal name otherwise.
-    fn resolve_target(&self, op: &TxnOp) -> Result<String, RefError> {
+    fn resolve_target(store: &RefStore, op: &TxnOp) -> Result<String, RefError> {
         if !op.deref() {
             return Ok(op.name().to_string());
         }
         let mut cur = op.name().to_string();
         for _ in 0..MAX_DEREF_DEPTH {
-            match self.store.read_raw(&cur) {
+            match store.read_raw(&cur) {
                 Some(RawRef::Symref(next)) => cur = next,
                 _ => return Ok(cur),
             }
@@ -288,42 +525,82 @@ impl<'a> Transaction<'a> {
     }
 
     /// Old-oid / existence rules (C `verify_old_values` + the lock-time
-    /// `unable to resolve reference` rule).
-    fn check_expectation(&self, op: &TxnOp, current: &Current, null: &Oid) -> Result<(), RefError> {
-        let name = op.name();
+    /// `unable to resolve reference` rule). `target` is the resolved write
+    /// location, named by the "unable to resolve" errors (C names the
+    /// dereferenced ref, e.g. t/t1404's indirect-update case).
+    fn check_expectation(
+        &self,
+        op: &TxnOp,
+        current: &Current,
+        target: &str,
+        null: &Oid,
+    ) -> Result<(), RefError> {
         match (op.expected_old(null), current) {
             (None, _) => Ok(()),
             (Some(Expectation::Absent), Current::Missing) => Ok(()),
+            // No-deref creation over a dangling symref preserves it (C
+            // files-backend "dangling symref already exists"); over a
+            // live symref it is a plain exists conflict.
             (Some(Expectation::Absent), Current::Symref) if !op.deref() => {
-                Err(Self::fail(op, "dangling symref already exists"))
+                if self.store.resolve(op.name()).is_none() {
+                    Err(Self::fail(op, "dangling symref already exists"))
+                } else {
+                    Err(Self::fail(op, "reference already exists"))
+                }
             }
             (Some(Expectation::Absent), _) => {
                 Err(Self::fail(op, "reference already exists"))
             }
             (Some(Expectation::At(_)), Current::Missing) => {
-                Err(Self::fail(op, format!("unable to resolve reference '{name}'")))
+                Err(Self::fail(op, format!("unable to resolve reference '{target}'")))
             }
             (Some(Expectation::At(exp)), Current::Oid(cur)) if *cur == exp => Ok(()),
             (Some(Expectation::At(exp)), Current::Oid(cur)) => {
                 Err(Self::fail(op, format!("is at {cur} but expected {exp}")))
             }
             // Literal (no-deref) update of a symref: C still compares the
-            // old expectation against the value the symref points to.
+            // old expectation against the value the symref points to; a
+            // dangling target reports "missing" (t/t1404 indirect
+            // no-deref cases).
             (Some(Expectation::At(exp)), Current::Symref) => {
-                let at = self.store.resolve(name).unwrap_or(*null);
-                if at == exp {
-                    Ok(())
-                } else {
-                    Err(Self::fail(op, format!("is at {at} but expected {exp}")))
+                match self.store.resolve(op.name()) {
+                    None => Err(Self::fail(op, format!("reference is missing but expected {exp}"))),
+                    Some(at) if at == exp => Ok(()),
+                    Some(at) => Err(Self::fail(op, format!("is at {at} but expected {exp}"))),
                 }
             }
         }
     }
 
-    /// D/F vs the filesystem: children block the path, blocking files
-    /// block the descent. Deletes honor the same rule (C reports the same
-    /// text even for `-d`).
-    fn check_df(&self, op: &TxnOp, target: &str) -> Result<(), RefError> {
+    /// Literal symref-target expectations for the symref verbs, with C's
+    /// exact error shapes (probed on the tree binary):
+    /// - missing literal + expected target: `unable to resolve reference`;
+    /// - regular file + expected target: `expected symref with target`;
+    /// - symref with another target: `verifying symref target: ... is at
+    ///   ... but expected ...`.
+    fn check_target_expectation(&self, op: &TxnOp, target: &str) -> Result<(), RefError> {
+        let Some(expected) = op.expected_target() else { return Ok(()) };
+        match self.store.read_raw(target) {
+            Some(RawRef::Symref(t)) if t == expected => Ok(()),
+            Some(RawRef::Symref(t)) => Err(Self::fail(
+                op,
+                format!("verifying symref target: '{}': is at {t} but expected {expected}", op.name()),
+            )),
+            Some(RawRef::Oid(_)) => Err(Self::fail(
+                op,
+                format!("expected symref with target '{expected}': but is a regular ref"),
+            )),
+            None => Err(Self::fail(op, format!("unable to resolve reference '{target}'"))),
+        }
+    }
+
+    /// D/F vs the filesystem, plus the batch-internal collision check (C
+    /// `refs_verify_refname_available` with `extras` = the batch names):
+    /// a child ref blocks creating/writing this path, a blocking file
+    /// ancestor blocks the descent, and a queued ancestor/descendant
+    /// collides with "cannot process ... at the same time". Deletes check
+    /// the filesystem only (t/t1404 df_test: the create's FS error wins).
+    fn check_df(&self, op: &TxnOp, target: &str, check_extras: bool) -> Result<(), RefError> {
         // A child ref (loose file or packed name under `target/`) blocks.
         if let Some(child) = self.first_child(target) {
             return Err(Self::fail(op, format!("'{child}' exists; cannot create '{target}'")));
@@ -332,7 +609,44 @@ impl<'a> Transaction<'a> {
         if let Some(blocker) = self.blocking_ancestor(target) {
             return Err(Self::fail(op, format!("'{blocker}' exists; cannot create '{target}'")));
         }
+        if check_extras {
+            // Ancestors first (shortest first), then descendants
+            // (lexicographically first), like C's dirname walk.
+            let mut ancestors: Vec<String> = Vec::new();
+            let mut rel = Path::new(target);
+            while let Some(parent) = rel.parent() {
+                if parent.as_os_str().is_empty() {
+                    break;
+                }
+                ancestors.push(parent.to_string_lossy().into_owned());
+                rel = parent;
+            }
+            ancestors.reverse();
+            for anc in &ancestors {
+                if self.batch_names().iter().any(|n| n == anc) {
+                    return Err(Self::fail(
+                        op,
+                        format!("cannot process '{target}' and '{anc}' at the same time"),
+                    ));
+                }
+            }
+            let prefix = format!("{target}/");
+            let mut desc: Vec<&String> =
+                self.batch_names().iter().filter(|n| n.starts_with(&prefix)).collect();
+            desc.sort();
+            if let Some(first) = desc.into_iter().next() {
+                return Err(Self::fail(
+                    op,
+                    format!("cannot process '{target}' and '{first}' at the same time"),
+                ));
+            }
+        }
         Ok(())
+    }
+
+    /// Every op name queued in this batch (C `transaction->refnames`).
+    fn batch_names(&self) -> &[String] {
+        &self.all_names
     }
 
     /// Map a `create_dir_all` failure to the C blocking-file text when an
@@ -345,11 +659,16 @@ impl<'a> Transaction<'a> {
         }
     }
 
-    /// Lexicographically-first loose child file under `target/`, if any.
+    /// Lexicographically-first child ref under `target/`, loose or packed
+    /// (C checks packed refs too: t/t1404's packed D/F cases).
     fn first_child(&self, target: &str) -> Option<String> {
         let base = self.store.loose_path(target);
         let mut children: Vec<String> = Vec::new();
         self.collect_files(&base, &format!("{target}/"), &mut children);
+        let prefix = format!("{target}/");
+        if let Some(packed) = self.store.packed_refs() {
+            children.extend(packed.iter().filter(|n| n.starts_with(&prefix)).cloned());
+        }
         children.sort();
         children.into_iter().next()
     }
@@ -368,8 +687,10 @@ impl<'a> Transaction<'a> {
         }
     }
 
-    /// Deepest ancestor of `target` that exists as a file.
+    /// Deepest ancestor of `target` that exists as a file, loose or
+    /// packed (C checks packed refs too).
     fn blocking_ancestor(&self, target: &str) -> Option<String> {
+        let packed = self.store.packed_refs();
         let mut rel = Path::new(target);
         let mut stack: Vec<String> = Vec::new();
         while let Some(parent) = rel.parent() {
@@ -384,6 +705,11 @@ impl<'a> Transaction<'a> {
             if p.is_file() {
                 return Some(anc);
             }
+            if let Some(names) = &packed {
+                if names.iter().any(|n| n == &anc) {
+                    return Some(anc);
+                }
+            }
         }
         None
     }
@@ -396,9 +722,39 @@ impl<'a> Transaction<'a> {
     }
 }
 
-/// `a` is a path-prefix (directory ancestor) of `b`.
-fn is_path_prefix(a: &str, b: &str) -> bool {
-    b.len() > a.len() && b.starts_with(a) && b.as_bytes()[a.len()] == b'/'
+/// One rejected op from [`Transaction::prepare_lenient`]: the queued
+/// index (for log correlation), the display name, C's detail text, and
+/// C's rejection class (`ref_transaction_error_msg`).
+#[derive(Debug, Clone)]
+pub struct OpRejection {
+    pub index: usize,
+    pub display: String,
+    pub detail: String,
+    pub msg: &'static str,
+}
+
+/// Map a transaction detail to C's rejection class by its stable
+/// message shapes (all probed against the tree binary).
+fn classify_detail(detail: &str) -> &'static str {
+    if detail.contains("unable to resolve reference") {
+        "reference does not exist"
+    } else if detail.contains("is at ") && detail.contains(" but expected ") {
+        "incorrect old value provided"
+    } else if detail.contains("reference already exists") || detail.contains("dangling symref already exists") {
+        "reference already exists"
+    } else if detail.contains("exists; cannot create") || detail.contains("cannot process") {
+        "refname conflict"
+    } else if detail.contains("verifying symref target") || detail.contains("expected symref") {
+        "expected symref but found regular ref"
+    } else if detail.contains("Unable to create") {
+        // Non-case lock contention categorizes as exists (C
+        // `CREATE_EXISTS` fallback); the case variant is detected by
+        // the caller, which overrides with the filesystem message.
+        "reference already exists"
+    } else {
+        // C's default (`unknown failure`) for unmapped kinds.
+        "unknown failure"
+    }
 }
 
 /// The raw content of a loose ref file, without symref following.
