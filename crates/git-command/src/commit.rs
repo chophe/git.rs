@@ -230,8 +230,19 @@ impl Command for Commit {
                 .and_then(|o| git_pretty::CommitInfo::parse(oid, &o.data, algo))
         });
 
-        // Nothing-to-commit detection.
-        if !a.amend && !a.allow_empty {
+        // A pending merge (MERGE_HEAD) adds the merged heads as extra
+        // parents and exempts the nothing-to-commit check below.
+        let merge_heads: Vec<Oid> = if a.amend {
+            Vec::new()
+        } else {
+            read_merge_heads(&repo.git_dir, algo)
+        };
+        let is_merge = !merge_heads.is_empty();
+
+        // Nothing-to-commit detection (skipped while merging: C lets a
+        // merge record an unchanged tree, t/t1400 "creating initial
+        // files").
+        if !a.amend && !a.allow_empty && !is_merge {
             let same_tree = head_commit.as_ref().map(|c| c.tree == tree_oid).unwrap_or(false);
             let empty_repo = head_oid.is_none() && index.entries.is_empty()
                 && crate::worktree::untracked_and_ignored(&repo, &index, false, true, &ctx.cwd).0.is_empty();
@@ -259,11 +270,12 @@ impl Command for Commit {
         let author = resolve_author(&repo, &a, head_commit.as_ref())?;
         let committer = ident::user_ident(&repo, false)?;
 
-        // Parents.
+        // Parents: `--amend` keeps HEAD's; otherwise HEAD plus any
+        // pending merge heads (computed above).
         let parents: Vec<Oid> = if a.amend {
             head_commit.as_ref().map(|c| c.parents.clone()).unwrap_or_default()
         } else {
-            head_oid.into_iter().collect()
+            head_oid.into_iter().chain(merge_heads.iter().copied()).collect()
         };
 
         let mut content = format!("tree {tree_oid}\n");
@@ -284,6 +296,8 @@ impl Command for Commit {
         let action = {
         let action = if a.amend {
             format!("commit (amend): {subject}")
+        } else if is_merge {
+            format!("commit (merge): {subject}")
         } else if head_oid.is_none() {
             format!("commit (initial): {subject}")
         } else {
@@ -342,6 +356,11 @@ impl Command for Commit {
             };
             let stat = diffstat(&odb, base_tree, tree_oid, algo);
             out.write_all(stat.as_bytes()).map_err(|e| CommandError::fatal(e.to_string()))?;
+        }
+        // A consumed merge clears the merge state (C `commit` unlinks
+        // MERGE_HEAD on success).
+        if is_merge {
+            let _ = std::fs::remove_file(repo.git_dir.join("MERGE_HEAD"));
         }
         Ok(())
     }
@@ -730,6 +749,17 @@ fn stage_pathspec(
         }
     }
     Ok(())
+}
+
+/// Pending merge heads from `MERGE_HEAD` (one oid per line; C's merge
+/// machinery writes it, `commit` consumes it into extra parents and
+/// unlinks it).
+fn read_merge_heads(git_dir: &Path, algo: HashAlgorithm) -> Vec<Oid> {
+    let content = std::fs::read_to_string(git_dir.join("MERGE_HEAD")).unwrap_or_default();
+    content
+        .lines()
+        .filter_map(|l| Oid::from_hex(l.trim(), algo).ok())
+        .collect()
 }
 
 fn short_branch(refname: &str) -> String {
