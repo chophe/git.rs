@@ -7,8 +7,8 @@
 
 ### Refs & Config Foundation
 
-- [ ] **REFS-01**: User gets reflog safety net — `git reflog` reads `logs/<ref>` and every mutating command logs (gate: `t/t1410`)
-- [ ] **REFS-02**: Concurrent ref updates stay safe via lock files + atomic rename + multi-ref transactions, including packed-refs write and `update-ref --stdin` (gate: `t/t1400`, `t/t3210`)
+- [x] **REFS-01**: User gets reflog safety net — `git reflog` reads `logs/<ref>` and every mutating command logs (gate: `t/t1410`)
+- [x] **REFS-02**: Concurrent ref updates stay safe via lock files + atomic rename + multi-ref transactions, including packed-refs write and `update-ref --stdin` (gate: `t/t1400`, `t/t3210`)
 - [ ] **CONF-01**: User manages setup via `git config` command with system/global/local/worktree scopes, includes, and `--list/--get/--unset` (gate: `t/t1300`)
 
 ### Scriptability
@@ -110,8 +110,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| REFS-01 | Phase 1 | Pending |
-| REFS-02 | Phase 1 | Pending |
+| REFS-01 | Phase 1 | Complete |
+| REFS-02 | Phase 1 | Complete |
 | CONF-01 | Phase 1 | Pending |
 | SCRIPT-01 | Phase 2 | Pending |
 | SCRIPT-02 | Phase 2 | Pending |
@@ -146,6 +146,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | MISC-02 | Phase 12 | Pending |
 
 **Coverage:**
+
 - v1 requirements: 34 total
 - Mapped to phases: 34
 - Unmapped: 0

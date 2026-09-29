@@ -40,7 +40,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. User can get, set, unset, and list config values across system/global/local/worktree scopes with includes honored
   4. Ported commands produce byte-identical stdout/stderr/exit codes vs C git on the phase's `t/` gates with no scoreboard regression
 
-**Plans**: 2/4 plans executed
+**Plans**: 3/4 plans executed
 
 Plans:
 **Wave 1**
@@ -50,7 +50,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 01-03-PLAN.md — Refs surface: full reflog matrix, update-ref --stdin, writer convergence
+- [x] 01-03-PLAN.md — Refs surface: full reflog matrix, update-ref --stdin, writer convergence
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
@@ -217,7 +217,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Refs & Config Foundation | 2/4 | In Progress|  |
+| 1. Refs & Config Foundation | 3/4 | In Progress|  |
 | 2. Scriptability Layer | 0/TBD | Not started | - |
 | 3. History Inspection | 0/TBD | Not started | - |
 | 4. File Lifecycle | 0/TBD | Not started | - |
