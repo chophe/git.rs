@@ -75,6 +75,20 @@ impl Resolver {
             return self.peel_brace(base_oid, kind).map_err(|_| unknown());
         }
 
+        // `<ref>@{<spec>}` reflog selectors (C `read_ref_at`): count and
+        // date forms. Handled before `:` so `ref@{date}:path` resolves
+        // the selector first, then walks the path.
+        if let Some((base, spec, rest)) = split_at_selector(arg) {
+            let oid = self.resolve_at(base, spec)?;
+            if rest.is_empty() {
+                return Ok(oid);
+            }
+            if let Some(path) = rest.strip_prefix(':') {
+                return self.rev_path_oid(oid, path).map_err(|_| unknown());
+            }
+            return Err(unknown());
+        }
+
         // `<rev>:<path>`: object at `path` inside the tree of `rev`.
         if let Some((rev, path)) = arg.split_once(':') {
             if !path.is_empty() && !rev.is_empty() {
@@ -180,6 +194,11 @@ impl Resolver {
     /// path components.
     fn rev_path(&self, rev: &str, path: &str) -> Result<Oid, ()> {
         let rev_oid = self.resolve(rev).map_err(|_| ())?;
+        self.rev_path_oid(rev_oid, path)
+    }
+
+    /// Walk `path` below the tree of `rev_oid`.
+    fn rev_path_oid(&self, rev_oid: Oid, path: &str) -> Result<Oid, ()> {
         let mut cur = self.odb.read(&rev_oid).map_err(|_| ())?;
         if cur.kind == ObjectKind::Commit {
             let tree_oid = commit_tree_oid(&cur.data, self.odb.algorithm()).ok_or(())?;
@@ -289,6 +308,103 @@ impl Resolver {
         }
     }
 
+    /// Resolve `<base>@{<spec>}` (C `read_ref_at`): a count selects the
+    /// Nth-newest entry's value; a date selects the newest entry not
+    /// newer than it, with C's before-history / gap / past-end warnings
+    /// on stderr.
+    fn resolve_at(&self, base: &str, spec: &str) -> Result<Oid, ResolveError> {
+        let unknown = || ResolveError::Unknown { arg: format!("{base}@{{{spec}}}") };
+        let full = self.dwim_log_name(base).ok_or_else(unknown)?;
+        let entries = git_refs::reflog::read_all(self.store.git_dir(), &full, self.odb.algorithm());
+        if entries.is_empty() {
+            return Err(unknown());
+        }
+        if spec.bytes().all(|b| b.is_ascii_digit()) && !spec.is_empty() {
+            let n: usize = spec.parse().unwrap_or(usize::MAX);
+            if n < entries.len() {
+                return Ok(entries[entries.len() - 1 - n].new);
+            }
+            eprintln!("warning: log for '{}' only has {} entries", base, entries.len());
+            return Ok(entries[0].new);
+        }
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let now = git_date::Timestamp::new(now_secs, 0);
+        let date = git_date::parse(spec, now).map(|t| t.secs).unwrap_or(0);
+        // Newest entry not newer than the date (entries are oldest-first).
+        let mut found: Option<usize> = None;
+        for (i, e) in entries.iter().enumerate().rev() {
+            if e.timestamp <= date {
+                found = Some(i);
+                break;
+            }
+        }
+        let Some(i) = found else {
+            // Before history: the oldest value, with C's warning naming
+            // the as-given ref.
+            let first = &entries[0];
+            eprintln!(
+                "warning: log for '{}' only goes back to {}",
+                base,
+                git_date::Timestamp::new(first.timestamp, first.tz_offset).format_rfc2822()
+            );
+            return Ok(first.new);
+        };
+        if i == entries.len() - 1 && date > entries[i].timestamp {
+            // Past the end: C returns the ref's CURRENT value (which may
+            // disagree with the log when the tip entry was deleted,
+            // `t/t1400` "past end of history"), warning with the newest
+            // log entry's date.
+            let last = &entries[i];
+            eprintln!(
+                "warning: log for ref {} unexpectedly ended on {}",
+                full,
+                git_date::Timestamp::new(last.timestamp, last.tz_offset).format_rfc2822()
+            );
+            if let Some(cur) = self.store.resolve(&full) {
+                return Ok(cur);
+            }
+            return Ok(last.new);
+        }
+        // Gap check: the next-newer entry must continue this one's value.
+        if i + 1 < entries.len() && entries[i + 1].old != entries[i].new {
+            let cur = &entries[i];
+            eprintln!(
+                "warning: log for ref {} has gap after {}",
+                full,
+                git_date::Timestamp::new(cur.timestamp, cur.tz_offset).format_rfc2822()
+            );
+        }
+        Ok(entries[i].new)
+    }
+
+    /// Dwim `base` to the full refname holding its log (resolve-order
+    /// candidates with a log file first, then the first resolvable one).
+    fn dwim_log_name(&self, base: &str) -> Option<String> {
+        let base = if base == "@" { "HEAD" } else { base };
+        let candidates = [
+            base.to_string(),
+            format!("refs/{base}"),
+            format!("refs/tags/{base}"),
+            format!("refs/heads/{base}"),
+            format!("refs/remotes/{base}"),
+            format!("refs/remotes/{base}/HEAD"),
+        ];
+        for c in &candidates {
+            if self.store.git_dir().join("logs").join(c).is_file() {
+                return Some(c.clone());
+            }
+        }
+        for c in &candidates {
+            if self.store.resolve(c).is_some() {
+                return Some(c.clone());
+            }
+        }
+        None
+    }
+
     fn commit_parents(&self, oid: &Oid) -> Option<Vec<Oid>> {
         let obj = self.odb.read(oid).ok()?;
         let commit = parse_commit(&obj.data, self.odb.algorithm()).ok()?;
@@ -322,7 +438,21 @@ fn split_brace_peel(arg: &str) -> Option<(&str, &str)> {
     Some((base, &arg[idx + 2..arg.len() - 1]))
 }
 
-/// Split the trailing `~<n>` / `^<n>` group off a revision string.
+/// Split `<base>@{<spec>}[<rest>]` (C reflog-selector syntax). Refnames
+/// never contain `@{`, so the first occurrence opens the selector; it
+/// runs to the first `}`. Returns `(base, spec, rest)`.
+fn split_at_selector(arg: &str) -> Option<(&str, &str, &str)> {
+    let at = arg.find("@{")?;
+    let base = &arg[..at];
+    if base.is_empty() {
+        return None;
+    }
+    let after = &arg[at + 2..];
+    let end = after.find('}')?;
+    Some((base, &after[..end], &after[end + 1..]))
+}
+
+/// Split a trailing `~<n>` / `^<n>` group off a revision string.
 /// Returns `(base, op, count)`.
 fn split_peel(arg: &str) -> Option<(&str, char, u64)> {
     let idx = arg.rfind(['~', '^'])?;
