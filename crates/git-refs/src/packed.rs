@@ -9,7 +9,7 @@
 
 use std::path::Path;
 
-use git_hash::Oid;
+use git_hash::{HashAlgorithm, Oid};
 
 use super::lock::LockFile;
 use super::RefError;
@@ -50,6 +50,47 @@ pub fn write_packed_refs(common_dir: &Path, entries: &[PackedEntry]) -> Result<(
     let mut lock = LockFile::acquire(&path)?;
     lock.write_and_fsync(render(entries).as_bytes())?;
     lock.commit()
+}
+
+/// Read the current packed entries (with `^`-peeled continuations
+/// attached to their tags); missing file reads as empty.
+pub fn read_entries(common_dir: &Path, algo: HashAlgorithm) -> Vec<PackedEntry> {
+    let content = std::fs::read_to_string(common_dir.join("packed-refs")).unwrap_or_default();
+    let mut out: Vec<PackedEntry> = Vec::new();
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(peeled) = line.strip_prefix('^') {
+            if let (Some(last), Ok(oid)) = (out.last_mut(), Oid::from_hex(peeled, algo)) {
+                last.peeled = Some(oid);
+            }
+            continue;
+        }
+        let mut it = line.splitn(2, ' ');
+        if let (Some(oid_s), Some(name)) = (it.next(), it.next()) {
+            if let Ok(oid) = Oid::from_hex(oid_s, algo) {
+                out.push(PackedEntry { name: name.to_string(), oid, peeled: None });
+            }
+        }
+    }
+    out
+}
+
+/// Remove `names` from packed-refs, rewriting atomically (a no-op when
+/// the file is missing or holds none of them). Used by ref deletes: C
+/// drops packed entries on delete.
+pub fn prune_entries(common_dir: &Path, algo: HashAlgorithm, names: &[&str]) -> Result<(), RefError> {
+    let path = common_dir.join("packed-refs");
+    if !path.is_file() {
+        return Ok(());
+    }
+    let entries: Vec<PackedEntry> = read_entries(common_dir, algo)
+        .into_iter()
+        .filter(|e| !names.contains(&e.name.as_str()))
+        .collect();
+    write_packed_refs(common_dir, &entries)
 }
 
 /// Unlink loose refs that were collapsed into a committed pack. Must run
