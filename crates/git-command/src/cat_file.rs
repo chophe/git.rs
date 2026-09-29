@@ -102,6 +102,7 @@ impl Command for CatFile {
         };
 
         let oid = Oid::from_hex(&oid_s, algo)
+            .or_else(|_| crate::resolve_arg(&repo, &oid_s))
             .map_err(|_| CommandError::error(format!("Not a valid object name '{oid_s}'")))?;
         let obj = odb
             .read(&oid)
