@@ -15,15 +15,89 @@ impl Command for ShowRef {
     }
 
     fn run(&self, ctx: &RepoContext, args: &[String], out: &mut dyn Write) -> Result<(), CommandError> {
+        let mut quiet = false;
+        let mut short = false;
+        let mut verify = false;
+        let mut heads_only = false;
+        let mut tags_only = false;
+        let mut patterns: Vec<String> = Vec::new();
         for a in args {
-            if !a.starts_with('-') {
-                return Err(CommandError::usage(format!("show-ref: unexpected argument '{a}'")));
+            match a.as_str() {
+                "-q" | "--quiet" => quiet = true,
+                "-s" => short = true,
+                "--verify" => verify = true,
+                "--heads" => heads_only = true,
+                "--tags" => tags_only = true,
+                s if s.starts_with('-') && s.len() > 1 => {
+                    return Err(CommandError::usage(format!("show-ref: unexpected argument '{s}'")));
+                }
+                s => patterns.push(s.to_string()),
             }
         }
         let repo = ctx.repository()?;
         let store = RefStore::from_repo(&repo);
-        for (name, oid) in store.list() {
-            writeln!(out, "{oid} {name}").map_err(|e| CommandError::fatal(e.to_string()))?;
+        let refs = store.list();
+        if verify && patterns.is_empty() {
+            return Err(CommandError::fatal("fatal: --verify requires a reference"));
+        }
+        let mut shown = 0usize;
+        // With `--verify` every pattern must match exactly; otherwise
+        // patterns filter by exact-or-prefix match (C `show-ref`). The
+        // verify path below prints; the main loop only counts there.
+        for (name, oid) in &refs {
+            if heads_only && !name.starts_with("refs/heads/") {
+                continue;
+            }
+            if tags_only && !name.starts_with("refs/tags/") {
+                continue;
+            }
+            let matched = if patterns.is_empty() {
+                true
+            } else if verify {
+                patterns.iter().any(|p| p == name)
+            } else {
+                patterns.iter().any(|p| *name == *p || name.starts_with(p.as_str()))
+            };
+            if !matched {
+                continue;
+            }
+            shown += 1;
+            if !verify && !quiet {
+                if short {
+                    writeln!(out, "{oid}").map_err(|e| CommandError::fatal(e.to_string()))?;
+                } else {
+                    writeln!(out, "{oid} {name}").map_err(|e| CommandError::fatal(e.to_string()))?;
+                }
+            }
+        }
+        if verify {
+            for p in &patterns {
+                // Exact list hit, or anything resolvable (onelevel
+                // pseudorefs like PSEUDOREF never appear in the
+                // refs/ listing but resolve fine, like C).
+                let hit = refs.iter().find(|(n, _)| n == p).map(|(_, o)| *o);
+                let oid = match hit {
+                    Some(o) => Some(o),
+                    None => crate::resolve_arg(&repo, p).ok(),
+                };
+                let Some(oid) = oid else {
+                    if quiet {
+                        return Err(CommandError::silent(1));
+                    }
+                    return Err(CommandError::fatal(format!("fatal: '{p}' - not a valid ref")));
+                };
+                if !quiet {
+                    if short {
+                        writeln!(out, "{oid}").map_err(|e| CommandError::fatal(e.to_string()))?;
+                    } else {
+                        writeln!(out, "{oid} {p}").map_err(|e| CommandError::fatal(e.to_string()))?;
+                    }
+                }
+            }
+            return Ok(());
+        }
+        if shown == 0 {
+            return Err(CommandError::silent(1));
         }
         Ok(())
     }
