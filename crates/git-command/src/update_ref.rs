@@ -1596,3 +1596,217 @@ fn shorten_ref(name: &str) -> String {
     }
     name.to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use git_odb::LooseStore;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    struct TempDir(PathBuf);
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).ok();
+        }
+    }
+
+    /// A repo with three branch refs at commit `c1`, plus commit `c2`
+    /// available as an update target. Returns the dir, the repo, and
+    /// `(c1, c2)`.
+    fn batch_repo() -> (TempDir, git_core::Repository, (Oid, Oid)) {
+        use git_core::{RepoEnv, Repository};
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!("git-update-ref-test-{}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let git = dir.join(".git");
+        std::fs::create_dir_all(git.join("refs/heads")).unwrap();
+        std::fs::create_dir_all(git.join("objects")).unwrap();
+        std::fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(git.join("config"), "[user]\n\tname = T\n\temail = t@example.com\n").unwrap();
+        let repo = Repository::discover_from(&dir, &RepoEnv::default()).unwrap();
+        let loose = LooseStore::from_repo(&repo);
+        let tree = loose.write_object(git_object::ObjectKind::Tree, b"").unwrap();
+        let commit_data = |msg: &str| {
+            format!("tree {tree}\nauthor T <t@example.com> 0 +0000\ncommitter T <t@example.com> 0 +0000\n\n{msg}\n")
+                .into_bytes()
+        };
+        let c1 = loose.write_object(git_object::ObjectKind::Commit, &commit_data("one")).unwrap();
+        let c2 = loose.write_object(git_object::ObjectKind::Commit, &commit_data("two")).unwrap();
+        for r in ["refs/heads/a", "refs/heads/b", "refs/heads/c"] {
+            std::fs::write(git.join(r), format!("{c1}\n")).unwrap();
+        }
+        (TempDir(dir), repo, (c1, c2))
+    }
+
+    /// Drive one batch through the runner, returning stdout text or the
+    /// command error.
+    fn run_batch(
+        repo: git_core::Repository,
+        odb: Odb,
+        nul: bool,
+        allow_failures: bool,
+        input: &[u8],
+    ) -> (Result<(), CommandError>, String) {
+        let mut out: Vec<u8> = Vec::new();
+        let result = {
+            let mut runner = BatchRunner {
+                repo,
+                odb,
+                out: &mut out,
+                msg: String::new(),
+                default_deref: true,
+                create_reflog: false,
+                allow_failures,
+                nul,
+                state: BatchState::Open,
+                pending_deref: true,
+                prepared: false,
+            };
+            let mut cursor = std::io::Cursor::new(input.to_vec());
+            runner.run_stream(&mut cursor)
+        };
+        (result, String::from_utf8(out).unwrap())
+    }
+
+    fn ref_tip(repo: &git_core::Repository, name: &str) -> String {
+        let store = RefStore::from_repo(repo);
+        store.resolve(name).map(|o| o.to_string()).unwrap_or_else(|| "unresolved".to_string())
+    }
+
+    fn cli_err(args: &[&str]) -> CommandError {
+        let owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        match parse_cli(&owned) {
+            Ok(_) => panic!("expected parse error for {args:?}"),
+            Err(e) => e,
+        }
+    }
+
+    #[test]
+    fn stdin_with_operands_is_usage() {
+        let err = cli_err(&["--stdin", "refs/heads/a"]);
+        assert_eq!(err.code, 129);
+    }
+
+    #[test]
+    fn nul_without_stdin_is_usage() {
+        let err = cli_err(&["-z"]);
+        assert_eq!(err.code, 129);
+    }
+
+    #[test]
+    fn batch_updates_without_stdin_is_fatal() {
+        let err = cli_err(&["--batch-updates"]);
+        assert_eq!(err.code, 128);
+    }
+
+    #[test]
+    fn empty_message_is_refused() {
+        let (_tmp, _, _) = batch_repo();
+        let ctx = RepoContext::at(&_tmp.0);
+        let mut buf = Vec::new();
+        let err = UpdateRef
+            .run(&ctx, &["-m".to_string(), "".to_string(), "refs/heads/a".to_string()], &mut buf)
+            .unwrap_err();
+        assert_eq!(err.code, 128);
+        assert!(err.message.contains("empty message"), "{}", err.message);
+    }
+
+    #[test]
+    fn unknown_command_dies() {
+        let (_tmp, repo, _) = batch_repo();
+        let odb = Odb::from_repo(&repo).unwrap();
+        let (res, _) = run_batch(repo, odb, false, false, b"frobnicate refs/heads/a\n");
+        let err = res.unwrap_err();
+        assert_eq!(err.code, 128);
+        assert!(err.message.contains("unknown command"), "{}", err.message);
+    }
+
+    #[test]
+    fn leading_whitespace_dies() {
+        let (_tmp, repo, _) = batch_repo();
+        let odb = Odb::from_repo(&repo).unwrap();
+        let (res, _) = run_batch(repo, odb, false, false, b" update refs/heads/a\n");
+        let err = res.unwrap_err();
+        assert!(err.message.contains("whitespace before command"), "{}", err.message);
+    }
+
+    #[test]
+    fn update_missing_new_oid_dies_with_arity() {
+        let (_tmp, repo, _) = batch_repo();
+        let odb = Odb::from_repo(&repo).unwrap();
+        let (res, _) = run_batch(repo, odb, false, false, b"update refs/heads/a\n");
+        let err = res.unwrap_err();
+        assert_eq!(err.code, 128);
+        assert!(err.message.contains("update refs/heads/a: missing <new-oid>"), "{}", err.message);
+    }
+
+    #[test]
+    fn delete_zero_old_oid_dies() {
+        let (_tmp, repo, _) = batch_repo();
+        let odb = Odb::from_repo(&repo).unwrap();
+        let zero = repo.hash_algo.null_oid().to_string();
+        let input = format!("delete refs/heads/a {zero}\n");
+        let (res, _) = run_batch(repo, odb, false, false, input.as_bytes());
+        let err = res.unwrap_err();
+        assert!(err.message.contains("delete refs/heads/a: zero <old-oid>"), "{}", err.message);
+    }
+
+    #[test]
+    fn bad_old_oid_leaves_every_ref_unchanged() {
+        let (_tmp, repo, (c1, c2)) = batch_repo();
+        let odb = Odb::from_repo(&repo).unwrap();
+        let zero = repo.hash_algo.null_oid().to_string();
+        // Two good updates plus one bad old-oid: the whole batch aborts.
+        let input = format!("update refs/heads/a {c2}\nupdate refs/heads/b {c2}\nupdate refs/heads/c {c2} {zero}\n");
+        let (res, _) = run_batch(repo, odb, false, false, input.as_bytes());
+        assert!(res.is_err(), "batch with a bad old-oid must fail");
+        for r in ["refs/heads/a", "refs/heads/b", "refs/heads/c"] {
+            assert_eq!(ref_tip(&_tmp_repo(&_tmp), r), c1.to_string());
+        }
+    }
+
+    fn _tmp_repo(_tmp: &TempDir) -> git_core::Repository {
+        use git_core::{RepoEnv, Repository};
+        Repository::discover_from(&_tmp.0, &RepoEnv::default()).unwrap()
+    }
+
+    #[test]
+    fn explicit_start_commit_reports_ok() {
+        let (_tmp, repo, (_, c2)) = batch_repo();
+        let odb = Odb::from_repo(&repo).unwrap();
+        let input = format!("start\nupdate refs/heads/a {c2}\ncommit\n");
+        let (res, text) = run_batch(repo, odb, false, false, input.as_bytes());
+        res.unwrap();
+        assert!(text.contains("start: ok"), "{text}");
+        assert!(text.contains("commit: ok"), "{text}");
+        assert_eq!(ref_tip(&_tmp_repo(&_tmp), "refs/heads/a"), c2.to_string());
+    }
+
+    #[test]
+    fn nul_batch_applies() {
+        let (_tmp, repo, (_, c2)) = batch_repo();
+        let odb = Odb::from_repo(&repo).unwrap();
+        // -z wire format: `update SP <ref> NUL <new> NUL <old> NUL`;
+        // an empty trailing segment means "old unspecified" (C
+        // `parse_next_oid` ret=1), while a truncated stream dies
+        // `unexpected end of input` (also C).
+        let input = format!("update refs/heads/a\0{c2}\0\0").into_bytes();
+        let (res, _) = run_batch(repo, odb, true, false, &input);
+        res.unwrap();
+        assert_eq!(ref_tip(&_tmp_repo(&_tmp), "refs/heads/a"), c2.to_string());
+    }
+
+    #[test]
+    fn symref_create_applies() {
+        let (_tmp, repo, _) = batch_repo();
+        let odb = Odb::from_repo(&repo).unwrap();
+        let input = b"symref-create refs/heads/sym refs/heads/a\n";
+        let (res, _) = run_batch(repo, odb, false, false, input);
+        res.unwrap();
+        let target = std::fs::read_to_string(_tmp.0.join(".git/refs/heads/sym")).unwrap();
+        assert_eq!(target.trim(), "ref: refs/heads/a");
+    }
+}
