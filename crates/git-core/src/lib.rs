@@ -247,6 +247,11 @@ fn find_git_dir(start: &Path) -> Result<Option<PathBuf>, RepoError> {
             }
             return Ok(Some(candidate));
         }
+        // A directory that itself holds HEAD/objects/refs is a bare
+        // repository (C `is_git_directory`); `-C bare.git` lands here.
+        if d.join("HEAD").is_file() && d.join("objects").is_dir() && d.join("refs").is_dir() {
+            return Ok(Some(d.to_path_buf()));
+        }
         dir = d.parent();
     }
     Ok(None)
