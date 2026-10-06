@@ -134,7 +134,7 @@ fn includeif_matrix_through_discovery() {
 #[test]
 fn layout_set_changes_only_that_line() {
     let before = "# top comment\n[user]\n    name = alice # trailing\n\temail = a@x.y\n; note\n[core]\n\tbare = false\n";
-    let after = set_value(before, "user", None, "name", "bob").unwrap();
+    let after = set_value(before, "user", None, "name", "bob", None).unwrap();
     // Single-hunk diff: same line count, exactly one line differs, and the
     // rest is byte-identical.
     let (b, a): (Vec<&str>, Vec<&str>) = (before.lines().collect(), after.lines().collect());
@@ -167,17 +167,17 @@ fn layout_unset_keeps_comments_and_drops_empty_sections() {
 fn multivar_add_replace_all_unset_all() {
     let base = "[a]\n\tk = one\n";
     // add appends a duplicate.
-    let text = add_value(base, "a", None, "k", "two");
+    let text = add_value(base, "a", None, "k", "two", None);
     assert_eq!(text, "[a]\n\tk = one\n\tk = two\n");
     let cfg = ConfigSet::parse(text.as_bytes()).unwrap();
     assert_eq!(cfg.get_all("a", "k"), vec!["one", "two"]);
 
     // Plain set refuses on multiple values (C CONFIG_NOTHING_SET).
-    assert!(set_value(&text, "a", None, "k", "x").is_err());
+    assert!(set_value(&text, "a", None, "k", "x", None).is_err());
 
     // replace-all with a value matcher rewrites only matching duplicates.
     let matcher = ValueMatcher::compile("^one$", false).unwrap();
-    let (text, n) = replace_all(&text, "a", None, "k", "ONE", Some(&matcher));
+    let (text, n) = replace_all(&text, "a", None, "k", "ONE", Some(&matcher), None);
     assert_eq!(n, 1);
     assert_eq!(text, "[a]\n\tk = ONE\n\tk = two\n");
 
@@ -202,14 +202,26 @@ fn multivar_add_replace_all_unset_all() {
 
 #[test]
 fn rename_and_remove_section() {
+    // C `section_name_match` is case-sensitive and subsection-exact: `old`
+    // renames only the plain `[old]` header (probed on the tree binary);
+    // `[old "sub"]` needs the dotted name `old.sub` (which drops the
+    // subsection, like C's `write_section`).
     let before = "[old]\n\ta = 1\n[old \"sub\"]\n\tb = 2\n[other]\n\tc = 3\n";
     let (after, n) = rename_section(before, "old", "new");
-    assert_eq!(n, 2);
-    assert_eq!(after, "[new]\n\ta = 1\n[new \"sub\"]\n\tb = 2\n[other]\n\tc = 3\n");
+    assert_eq!(n, 1);
+    assert_eq!(after, "[new]\n\ta = 1\n[old \"sub\"]\n\tb = 2\n[other]\n\tc = 3\n");
 
     let (after, n) = remove_section(&after, "new");
-    assert_eq!(n, 2);
-    assert_eq!(after, "[other]\n\tc = 3\n");
+    assert_eq!(n, 1);
+    assert_eq!(after, "[old \"sub\"]\n\tb = 2\n[other]\n\tc = 3\n");
+
+    let (after, n) = rename_section(before, "old.sub", "new");
+    assert_eq!(n, 1);
+    assert_eq!(after, "[old]\n\ta = 1\n[new]\n\tb = 2\n[other]\n\tc = 3\n");
+
+    let (after, n) = remove_section(before, "OLD");
+    assert_eq!(n, 0);
+    assert_eq!(after, before);
 }
 
 #[test]
@@ -247,7 +259,10 @@ fn atomic_write_replaces_and_locks() {
     // A competing lock file blocks the write instead of tearing state.
     std::fs::write(dir.join("config.lock"), "stale").unwrap();
     let err = write_config_file(&path, "[a]\n\tk = 2\n").unwrap_err();
-    assert_eq!(err.to_string(), format!("could not lock config file {}", path.display()));
+    assert_eq!(
+        err.to_string(),
+        format!("could not lock config file {}: File exists (os error 17)", path.display())
+    );
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "[a]\n\tk = 1\n");
     let _ = std::fs::remove_dir_all(&dir);
 }
