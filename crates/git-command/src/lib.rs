@@ -16,6 +16,7 @@ pub mod checkout_core;
 pub mod commit;
 pub mod commit_graph;
 pub mod commit_tree;
+pub mod config_cmd;
 pub mod clean;
 pub mod count_objects;
 pub mod diff;
@@ -414,6 +415,7 @@ pub fn dispatch_with(
         "update-ref" => &update_ref::UpdateRef,
         "symbolic-ref" => &update_ref::SymbolicRef,
         "reflog" => &reflog::Reflog,
+        "config" => &config_cmd::Config,
         "branch" => &show_ref::Branch,
         "merge-base" => &merge_base::MergeBase,
         "merge-file" => &merge_file::MergeFile,
