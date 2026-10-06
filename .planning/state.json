@@ -1,0 +1,73 @@
+{
+  "contract": "1.0.0",
+  "flavor": "core",
+  "milestone": null,
+  "phases": [
+    {
+      "number": "1",
+      "name": "Refs & Config Foundation",
+      "status": "in_progress"
+    },
+    {
+      "number": "2",
+      "name": "Scriptability Layer",
+      "status": "pending"
+    },
+    {
+      "number": "3",
+      "name": "History Inspection",
+      "status": "pending"
+    },
+    {
+      "number": "4",
+      "name": "File Lifecycle",
+      "status": "pending"
+    },
+    {
+      "number": "5",
+      "name": "Merge & Sequencer Workflows",
+      "status": "pending"
+    },
+    {
+      "number": "6",
+      "name": "Store Maintenance & Local Transport",
+      "status": "pending"
+    },
+    {
+      "number": "7",
+      "name": "Integrity & Option Depth",
+      "status": "pending"
+    },
+    {
+      "number": "8",
+      "name": "Network Transport",
+      "status": "pending"
+    },
+    {
+      "number": "9",
+      "name": "Patch Exchange & Signing",
+      "status": "pending"
+    },
+    {
+      "number": "10",
+      "name": "Nested Repos & Interactive Porcelain",
+      "status": "pending"
+    },
+    {
+      "number": "11",
+      "name": "Checkout Conversion & Scale",
+      "status": "pending"
+    },
+    {
+      "number": "12",
+      "name": "Long Tail & Legacy Importers",
+      "status": "pending"
+    }
+  ],
+  "next": {
+    "command": "/gsd:progress --next",
+    "label": "Advance to the next step",
+    "reason": "Phase 01 of 12 · 0% · executing"
+  },
+  "updated_at": "2026-09-29T14:54:55.863Z"
+}
