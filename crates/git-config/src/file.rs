@@ -239,9 +239,16 @@ pub fn render_value(value: &str) -> String {
     out
 }
 
-/// Render a fresh pair line per C `write_pair` (`\tkey = value`).
-fn render_pair(key: &str, value: &str) -> String {
-    format!("\t{} = {}", key, render_value(value))
+/// Render a fresh pair line per C `write_pair` (`\tkey = value`), with an
+/// optional `# comment` suffix (C appends ` # comment`, dropping any old
+/// trailing comment — probed on the tree binary).
+fn render_pair(key: &str, value: &str, comment: Option<&str>) -> String {
+    let mut line = format!("\t{} = {}", key, render_value(value));
+    if let Some(c) = comment {
+        line.push_str(" # ");
+        line.push_str(c);
+    }
+    line
 }
 
 /// Render a fresh section header per C `store_create_section`.
@@ -312,12 +319,15 @@ fn last_section_line(doc: &Doc, section: &str, subsection: Option<&str>) -> Opti
 /// Set a single value: replaces the entry when exactly one matches, appends
 /// (end of the last matching section, else a new section at EOF) when none
 /// matches, and refuses when several match (C `CONFIG_NOTHING_SET`).
+/// `comment` (C `--comment`) is appended as ` # comment`, replacing any old
+/// trailing comment.
 pub fn set_value(
     text: &str,
     section: &str,
     subsection: Option<&str>,
     key: &str,
     value: &str,
+    comment: Option<&str>,
 ) -> Result<String, MultipleValues> {
     let doc = parse_doc(text);
     let hits = find_matches(&doc, section, subsection, key);
@@ -329,13 +339,16 @@ pub fn set_value(
                 &doc,
                 section,
                 subsection,
-                render_pair(&key.to_ascii_lowercase(), value),
+                render_pair(&key.to_ascii_lowercase(), value, comment),
             );
             Ok(lines.join("\n"))
         }
         1 => {
             let span = &doc.spans[hits[0]];
-            lines.splice(span.line..=span.end, [render_pair(&span.key, value)]);
+            lines.splice(
+                span.line..=span.end,
+                [render_pair(&span.key, value, comment)],
+            );
             Ok(lines.join("\n"))
         }
         _ => Err(MultipleValues),
@@ -350,6 +363,7 @@ pub fn add_value(
     subsection: Option<&str>,
     key: &str,
     value: &str,
+    comment: Option<&str>,
 ) -> String {
     let doc = parse_doc(text);
     let mut lines: Vec<String> = doc.lines.clone();
@@ -358,7 +372,7 @@ pub fn add_value(
         &doc,
         section,
         subsection,
-        render_pair(&key.to_ascii_lowercase(), value),
+        render_pair(&key.to_ascii_lowercase(), value, comment),
     );
     lines.join("\n")
 }
@@ -378,6 +392,7 @@ pub fn replace_all(
     key: &str,
     value: &str,
     matcher: Option<&ValueMatcher>,
+    comment: Option<&str>,
 ) -> (String, usize) {
     let doc = parse_doc(text);
     let targets: Vec<usize> = find_matches(&doc, section, subsection, key)
@@ -385,7 +400,7 @@ pub fn replace_all(
         .filter(|&i| matcher_accepts(matcher, &doc.spans[i].value))
         .collect();
     if targets.is_empty() {
-        return (add_value(text, section, subsection, key, value), 0);
+        return (add_value(text, section, subsection, key, value, comment), 0);
     }
     let mut lines: Vec<String> = doc.lines.clone();
     // Descending spans so earlier indices stay valid.
@@ -394,7 +409,10 @@ pub fn replace_all(
     let count = ordered.len();
     for i in ordered {
         let span = &doc.spans[i];
-        lines.splice(span.line..=span.end, [render_pair(&span.key, value)]);
+        lines.splice(
+            span.line..=span.end,
+            [render_pair(&span.key, value, comment)],
+        );
     }
     (lines.join("\n"), count)
 }
@@ -476,47 +494,78 @@ pub fn unset_all(
     (lines.join("\n"), removed)
 }
 
-/// Rename a section (C `--rename-section`): every matching header — plain and
-/// sub-sectioned — is rewritten, subsections kept. Returns text plus the
-/// number of rewritten headers.
+/// C `section_name_match` (`config.c`): match a raw header line against a
+/// section name, case-sensitively. The name's first `.` maps to the
+/// subsection separator, so `s.y` matches `[s "y"]`; a dotless name matches
+/// only a plain `[s]` header, and a dotted name also matches a literal
+/// `[s.y]` header.
+fn header_matches_section(line: &str, name: &str) -> bool {
+    let inner = match line.trim_start().strip_prefix('[') {
+        Some(rest) => rest,
+        None => return false,
+    };
+    let end = match inner.find(']') {
+        Some(e) => e,
+        None => return false,
+    };
+    let body = inner[..end].trim();
+    // Literal match for quote-free headers (covers dotted `[s.y]`).
+    if !body.contains('"') && body == name {
+        return true;
+    }
+    let q = match body.find('"') {
+        Some(q) => q,
+        None => return false,
+    };
+    let sec = body[..q].trim_end();
+    let rest = &body[q + 1..];
+    let sub = match rest.find('"') {
+        Some(j) => &rest[..j],
+        None => return false,
+    };
+    match name.find('.') {
+        Some(d) => sec == &name[..d] && *sub == name[d + 1..],
+        None => false,
+    }
+}
+
+/// Rename a section (C `--rename-section` → `write_section(new_name)`): every
+/// header matching `old` (C `section_name_match`, case-sensitive, `sec.sub`
+/// matching `[sec "sub"]`) is rewritten as a plain `[new]` header —
+/// subsections are dropped, like C. Returns text plus rewritten headers.
 pub fn rename_section(text: &str, old: &str, new: &str) -> (String, usize) {
     let doc = parse_doc(text);
     let mut lines: Vec<String> = doc.lines.clone();
     let mut count = 0;
     for (i, kind) in doc.kinds.iter().enumerate() {
-        if let Line::Section { name, sub } = kind {
-            if section_eq(name, old) {
-                let header = render_section(new, sub.as_deref());
-                // Preserve anything after `]` on a single-line header.
-                let rest = match lines[i].find(']') {
-                    Some(j) => lines[i][j + 1..].to_string(),
-                    None => String::new(),
-                };
-                lines[i] = format!("{header}{rest}");
-                count += 1;
-            }
+        if matches!(kind, Line::Section { .. }) && header_matches_section(&lines[i], old) {
+            // Preserve anything after `]` on a single-line header.
+            let rest = match lines[i].find(']') {
+                Some(j) => lines[i][j + 1..].to_string(),
+                None => String::new(),
+            };
+            lines[i] = format!("[{new}]{rest}");
+            count += 1;
         }
     }
     (lines.join("\n"), count)
 }
 
-/// Remove a section and all its entries (C `--remove-section`), including
-/// sub-sectioned variants. Returns text plus removed headers.
+/// Remove a section and all its entries (C `--remove-section`, same
+/// `section_name_match` rule as rename). Returns text plus removed headers.
 pub fn remove_section(text: &str, section: &str) -> (String, usize) {
     let doc = parse_doc(text);
     let mut dead = vec![false; doc.lines.len()];
     let mut count = 0;
     let mut drops: Vec<(usize, usize)> = Vec::new();
     for (i, kind) in doc.kinds.iter().enumerate() {
-        if let Line::Section { name, .. } = kind {
-            if section_eq(name, section) {
-                let end = doc.kinds.iter().enumerate().skip(i + 1).find_map(|(j, k)| match k {
-                    Line::Section { .. } => Some(j),
-                    _ => None,
-                });
-                drops.push((i, end.unwrap_or(doc.lines.len())));
-                count += 1;
-            }
+        if matches!(kind, Line::Section { .. }) && header_matches_section(&doc.lines[i], section) {
+            let end = doc.kinds.iter().enumerate().skip(i + 1).find_map(|(j, k)| match k {
+                Line::Section { .. } => Some(j),
+                _ => None,
+            });
+            drops.push((i, end.unwrap_or(doc.lines.len())));
+            count += 1;
         }
     }
     for (h, end) in drops {
@@ -546,7 +595,7 @@ pub fn write_config_file(path: &Path, content: &str) -> Result<(), ConfigError> 
             .write(true)
             .create_new(true)
             .open(lock_path)
-            .map_err(|_| ConfigError::LockDenied(path.to_path_buf()))?;
+            .map_err(|e| ConfigError::LockDenied { path: path.to_path_buf(), reason: e.to_string() })?;
         f.write_all(content.as_bytes())
             .map_err(|e| ConfigError::Io(e.to_string()))?;
         f.sync_all()
@@ -581,8 +630,9 @@ fn validate_regex(pat: &str) -> Result<(), InvalidPattern> {
     }
 }
 
-fn regex_search(pat: &str, text: &str) -> bool {
-    let bytes = pat.as_bytes();
+/// Unanchored `REG_EXTENDED`-subset search (C `regexec` semantics for value
+/// and key patterns). Exposed for the `config` command's `--regexp` paths.
+pub fn regex_search(pat: &str, text: &str) -> bool {    let bytes = pat.as_bytes();
     let mut pos = 0;
     let Ok((node, _)) = parse_rx(bytes, &mut pos, false, true) else {
         return false;
