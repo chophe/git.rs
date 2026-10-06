@@ -658,7 +658,11 @@ struct LoadedEntry {
 
 /// Quote a filename C-style for `--show-origin` (C `quote_c_style`): plain
 /// paths print bare; anything needing it gets double quotes + escapes.
+/// Empty names (command line, standard input) print as nothing.
 fn quote_filename(s: &str) -> String {
+    if s.is_empty() {
+        return String::new();
+    }
     let needs = s.is_empty()
         || s.bytes().any(|b| {
             b < 0x20
@@ -704,6 +708,16 @@ fn display_path(path: &Path) -> String {
     path.display().to_string()
 }
 
+/// C `die_errno` reason for config-file reads: the bare `strerror` text.
+fn io_reason(e: &std::io::Error) -> String {
+    match e.kind() {
+        std::io::ErrorKind::NotFound => "No such file or directory".to_string(),
+        std::io::ErrorKind::IsADirectory => "Is a directory".to_string(),
+        std::io::ErrorKind::PermissionDenied => "Permission denied".to_string(),
+        _ => e.to_string(),
+    }
+}
+
 /// Which scope-file operation targets (C `location_options_init` +
 /// `repo_config_set_in_file_gently` defaulting).
 struct WriteTarget {
@@ -747,7 +761,12 @@ fn load_read_source(
             ));
         }
     }
-    let respect = loc.includes.unwrap_or(loc.file.is_none() && loc.blob.is_none());
+    let has_selector =
+        loc.global || loc.system || loc.local || loc.worktree || loc.file.is_some() || loc.blob.is_some();
+    // C `location_options_init`: an explicit selector (scope flag, `-f`,
+    // `--blob`) disables include-following unless `--includes` is given;
+    // only the default layered read follows includes.
+    let respect = loc.includes.unwrap_or(!has_selector);
 
     // --blob: read the blob object (scope command, origin blob).
     if let Some(blob_rev) = &loc.blob {
@@ -836,7 +855,7 @@ fn load_read_source(
                 return Err(CommandError::fatal(format!(
                     "fatal: unable to read config file '{}': {}",
                     file,
-                    e.to_string()
+                    io_reason(&e),
                 )));
             }
         };
@@ -885,8 +904,8 @@ fn load_read_source(
         let display = display_path(&path);
         // Existence check first: missing reads as empty (list dies on the
         // marker below), unreadable dies — like C.
-        match std::fs::read(&path) {
-            Ok(_) => {}
+        let data = match std::fs::read(&path) {
+            Ok(d) => d,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(ReadSource { entries: Vec::new(), missing_file: Some(display.clone()) });
             }
@@ -894,22 +913,28 @@ fn load_read_source(
                 return Err(CommandError::fatal(format!(
                     "fatal: unable to read config file '{}': {}",
                     display,
-                    e.to_string()
+                    io_reason(&e),
                 )));
             }
         };
-        // Scope files resolve their own includes (C always respects them
-        // here; `respect` only gates `-f`).
-        let ictx = repo
-            .map(|r| {
-                IncludeContext::for_repo(
-                    &r.git_dir,
-                    r.work_tree.clone().or_else(|| r.git_dir.parent().map(|p| p.to_path_buf())),
-                )
-            })
-            .unwrap_or_default();
-        let set =
-            ConfigSet::from_file_with(&path, &ictx).map_err(|e| file_load_error(&e, &display))?;
+        // A bare scope selector only follows its own includes under
+        // `--includes`; otherwise the file reads as literal entries (C
+        // `respect_includes` default).
+        let set = if respect {
+            // Scope files resolve their own includes (C always respects them
+            // here; `respect` only gates `-f`).
+            let ictx = repo
+                .map(|r| {
+                    IncludeContext::for_repo(
+                        &r.git_dir,
+                        r.work_tree.clone().or_else(|| r.git_dir.parent().map(|p| p.to_path_buf())),
+                    )
+                })
+                .unwrap_or_default();
+            ConfigSet::from_file_with(&path, &ictx).map_err(|e| file_load_error(&e, &display))?
+        } else {
+            ConfigSet::parse(&data).map_err(|e| file_load_error(&e, &display))?
+        };
         let entries = set
             .entries()
             .iter()
