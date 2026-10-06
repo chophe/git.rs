@@ -20,6 +20,14 @@ pub struct ConfigEntry {
     pub value: String,
     /// The file this entry came from, if any.
     pub origin: Option<PathBuf>,
+    /// A bare `key` with no `= value` (C NULL value): prints empty but dies
+    /// like a missing value for `--path`/`--expiry-date`/color lookups.
+    pub value_is_null: bool,
+    /// 1-based line number within [`ConfigEntry::origin`] (0 when unknown,
+    /// e.g. command-line overlays). Used for C-exact `bad config line N`
+    /// locations on the read path (`--path` null values, bad colors,
+    /// bad expiry dates).
+    pub lineno: usize,
 }
 
 impl ConfigEntry {
@@ -59,8 +67,8 @@ pub enum ConfigError {
     /// (e.g. `bad boolean config value 'maybe' for 'a.b'`).
     BadValue(String),
     /// A scope file that could not be locked for writing
-    /// (C `could not lock config file %s`).
-    LockDenied(PathBuf),
+    /// (C `could not lock config file %s[: %s]`).
+    LockDenied { path: PathBuf, reason: String },
 }
 
 impl fmt::Display for ConfigError {
@@ -89,7 +97,13 @@ impl fmt::Display for ConfigError {
                 Ok(())
             }
             ConfigError::BadValue(msg) => write!(f, "{msg}"),
-            ConfigError::LockDenied(p) => write!(f, "could not lock config file {}", p.display()),
+            ConfigError::LockDenied { path, reason } => {
+                write!(f, "could not lock config file {}", path.display())?;
+                if !reason.is_empty() {
+                    write!(f, ": {reason}")?;
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -267,6 +281,8 @@ impl ConfigSet {
                     key,
                     value,
                     origin: origin.clone(),
+                    lineno: line_no,
+                    value_is_null: !rest.contains('=') && rest.split_whitespace().count() < 2,
                 });
                 last_value_index = Some(self.entries.len() - 1);
                 continuation = cont;
@@ -288,6 +304,8 @@ impl ConfigSet {
                 key,
                 value,
                 origin: origin.clone(),
+                lineno: line_no,
+                value_is_null: !trimmed.contains('=') && trimmed.split_whitespace().count() < 2,
             });
             last_value_index = Some(self.entries.len() - 1);
             continuation = cont;
@@ -373,6 +391,8 @@ impl ConfigSet {
             key: key.to_ascii_lowercase(),
             value: value.to_string(),
             origin: None,
+            lineno: 0,
+            value_is_null: false,
         });
     }
 
@@ -412,35 +432,67 @@ impl ConfigSet {
     /// `[include]` entries; CLI overlays (`GIT_CONFIG_COUNT` pairs, `-c`)
     /// are applied by the caller afterwards so they always win.
     pub fn load_repo_scopes(scopes: &RepoScopes) -> Result<ConfigSet, ConfigError> {
-        let mut paths = Vec::new();
-        if env_allows_system() {
-            paths.push(system_config_path());
-        }
-        let (user, xdg) = global_config_paths();
-        if let Some(x) = xdg {
-            paths.push(x);
-        }
-        if let Some(u) = user {
-            paths.push(u);
-        }
-        paths.push(scopes.commondir.join("config"));
-
-        let ctx = IncludeContext {
-            git_dir: Some(scopes.git_dir.clone()),
-            git_dir_fallback: scopes.git_dir_verbatim.clone(),
-            worktree: scopes.worktree.clone(),
-            head_branch: resolve_head_branch(&scopes.git_dir),
-        };
-        let mut set = load_roots(&paths, &ctx, false, &[])?;
-        if worktree_config_enabled(&set) {
-            // The worktree scope's `hasconfig:` conditions see the main
-            // scopes' remotes too (C collects across the whole sequence).
-            let wt_path = scopes.git_dir.join("config.worktree");
-            let wt = load_roots(std::slice::from_ref(&wt_path), &ctx, false, &paths)?;
-            set.append(wt);
+        let mut set = ConfigSet::new();
+        for scoped in load_scoped_roots_for(scopes)? {
+            set.entries.push(scoped.entry);
         }
         Ok(set)
     }
+
+    /// Like [`ConfigSet::load_repo_scopes`] but tags every entry with the
+    /// scope of the root file that pulled it in (C `do_git_config_sequence`
+    /// order; the `hasconfig:` remote pre-pass spans all roots, like C's
+    /// lazy `populate_remote_urls`). The `config` command uses this for
+    /// `--show-origin`/`--show-scope` and location-qualified type errors.
+    pub fn load_repo_scoped(scopes: &RepoScopes) -> Result<Vec<ScopedEntry>, ConfigError> {
+        load_scoped_roots_for(scopes)
+    }
+}
+
+/// Layered repository scopes with per-entry scope tags (C
+/// `do_git_config_sequence` in `config.c`).
+fn load_scoped_roots_for(scopes: &RepoScopes) -> Result<Vec<ScopedEntry>, ConfigError> {
+    let mut roots: Vec<(ConfigScope, PathBuf)> = Vec::new();
+    if env_allows_system() {
+        roots.push((ConfigScope::System, system_config_path()));
+    }
+    let (user, xdg) = global_config_paths();
+    if let Some(x) = xdg {
+        roots.push((ConfigScope::Global, x));
+    }
+    if let Some(u) = user {
+        roots.push((ConfigScope::Global, u));
+    }
+    roots.push((ConfigScope::Local, scopes.commondir.join("config")));
+
+    let paths: Vec<PathBuf> = roots.iter().map(|(_, p)| p.clone()).collect();
+    let ctx = IncludeContext {
+        git_dir: Some(scopes.git_dir.clone()),
+        git_dir_fallback: scopes.git_dir_verbatim.clone(),
+        worktree: scopes.worktree.clone(),
+        head_branch: resolve_head_branch(&scopes.git_dir),
+    };
+    let mut out = load_roots_scoped(&paths, &roots, &ctx, false, &[])?;
+    // Re-resolve the merged set for the worktree gate (flag AND explicit
+    // version, probed on the tree binary), exactly as before.
+    let mut merged = ConfigSet::new();
+    for scoped in &out {
+        merged.entries.push(scoped.entry.clone());
+    }
+    if worktree_config_enabled(&merged) {
+        // The worktree scope's `hasconfig:` conditions see the main
+        // scopes' remotes too (C collects across the whole sequence).
+        let wt_path = scopes.git_dir.join("config.worktree");
+        let wt = load_roots_scoped(
+            std::slice::from_ref(&wt_path),
+            &[(ConfigScope::Worktree, wt_path.clone())],
+            &ctx,
+            false,
+            &paths,
+        )?;
+        out.extend(wt);
+    }
+    Ok(out)
 }
 
 /// Which on-disk scopes to layer for one repository.
@@ -457,6 +509,38 @@ pub struct RepoScopes {
     /// Unresolved absolute `.git` directory (C retries `gitdir:` matches
     /// against the non-realpath form so symlinked patterns keep working).
     pub git_dir_verbatim: Option<PathBuf>,
+}
+
+/// The scope a config entry was loaded from (C `config_scope`, as printed
+/// by `--show-scope`). The XDG file reports `global`, like C.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigScope {
+    System,
+    Global,
+    Local,
+    Worktree,
+    Command,
+}
+
+impl ConfigScope {
+    /// C `config_scope_name`.
+    pub fn name(self) -> &'static str {
+        match self {
+            ConfigScope::System => "system",
+            ConfigScope::Global => "global",
+            ConfigScope::Local => "local",
+            ConfigScope::Worktree => "worktree",
+            ConfigScope::Command => "command",
+        }
+    }
+}
+
+/// One entry with the scope of the root file that pulled it in (entries
+/// from `[include]`s inherit their root's scope, like C).
+#[derive(Debug, Clone)]
+pub struct ScopedEntry {
+    pub scope: ConfigScope,
+    pub entry: ConfigEntry,
 }
 
 fn env_bool(name: &str, def: bool) -> bool {
@@ -476,6 +560,28 @@ fn system_config_path() -> PathBuf {
     std::env::var_os("GIT_CONFIG_SYSTEM")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/etc/gitconfig"))
+}
+
+/// Resolve the `--system` scope file (C `git_system_config`).
+pub fn system_config_file() -> PathBuf {
+    system_config_path()
+}
+
+/// Resolve the `--global` scope file (C `git_global_config`): the user file,
+/// or the XDG file when the user file is unreadable; `None` when no home is
+/// known (the surface dies `$HOME not set`, like C).
+pub fn global_config_file() -> Option<PathBuf> {
+    let (user, xdg) = global_config_paths();
+    let user = user?;
+    let user_readable = std::fs::File::open(&user).is_ok();
+    if !user_readable {
+        if let Some(x) = xdg {
+            if std::fs::File::open(&x).is_ok() {
+                return Some(x);
+            }
+        }
+    }
+    Some(user)
 }
 
 /// C `git_global_config_paths()`: `GIT_CONFIG_GLOBAL` overrides the user file
@@ -526,6 +632,20 @@ pub struct IncludeContext {
     /// Current branch short name for `onbranch:` (from `HEAD`'s symref target,
     /// even when unborn; `None` when detached or unreadable).
     pub head_branch: Option<String>,
+}
+
+impl IncludeContext {
+    /// Context for single-file reads inside `git_dir` (the `config`
+    /// command's `--file` path with `--includes`, mirroring the
+    /// `commondir`/`git_dir` the C surface threads into its options).
+    pub fn for_repo(git_dir: &Path, worktree: Option<PathBuf>) -> IncludeContext {
+        IncludeContext {
+            git_dir: Some(git_dir.to_path_buf()),
+            git_dir_fallback: None,
+            worktree,
+            head_branch: resolve_head_branch(git_dir),
+        }
+    }
 }
 
 /// One `[include] path` / `[includeIf "<cond>"] path` directive.
@@ -713,6 +833,73 @@ fn tilde_expand(value: &str) -> String {
     value.to_string()
 }
 
+/// A canonicalized `section[.subsection.]key` name (C
+/// `git_config_parse_key`): section and key lowercased, subsection
+/// case-preserved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CanonicalKey {
+    pub section: String,
+    pub subsection: Option<String>,
+    pub key: String,
+}
+
+/// Parse and canonicalize a `section[.subsection.]key` name, exactly like C
+/// `do_parse_config_key`. On failure returns the exit code C's callers
+/// observe (2 for a missing section/name, 1 for an invalid key) with C's
+/// exact `error:` text (without the prefix).
+pub fn parse_key_name(name: &str) -> Result<CanonicalKey, (i32, String)> {
+    let bytes = name.as_bytes();
+    let Some(last_dot) = bytes.iter().rposition(|&b| b == b'.') else {
+        return Err((2, format!("key does not contain a section: {name}")));
+    };
+    if last_dot == 0 {
+        return Err((2, format!("key does not contain a section: {name}")));
+    }
+    if last_dot + 1 >= bytes.len() {
+        return Err((2, format!("key does not contain variable name: {name}")));
+    }
+    let first_dot = bytes.iter().position(|&b| b == b'.').unwrap_or(last_dot);
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut seen_dot = false;
+    for (i, &c) in bytes.iter().enumerate() {
+        if c == b'.' {
+            seen_dot = true;
+            out.push(c);
+            continue;
+        }
+        // C: section (before the first dot) and key (after the last dot)
+        // must be `[alnum-]` (key must start alpha) and are lowercased;
+        // the subsection between them only rejects newlines.
+        if !seen_dot || i > last_dot {
+            let ok = c.is_ascii_alphanumeric() || c == b'-';
+            let first_of_key = i == last_dot + 1;
+            if !ok || (first_of_key && !c.is_ascii_alphabetic()) {
+                return Err((1, format!("invalid key: {name}")));
+            }
+            out.push(c.to_ascii_lowercase());
+        } else {
+            if c == b'\n' {
+                return Err((1, format!("invalid key (newline): {name}")));
+            }
+            out.push(c);
+        }
+    }
+    let _ = first_dot;
+    let canonical = String::from_utf8(out).map_err(|_| (1, format!("invalid key: {name}")))?;
+    // Split the canonical form: section = up to first dot, key = after
+    // last dot, subsection = between (or none).
+    let first = canonical.find('.').unwrap_or(canonical.len());
+    let section = canonical[..first].to_string();
+    let rest = &canonical[first + 1..];
+    let (subsection, key) = match rest.rfind('.') {
+        Some(j) => (Some(rest[..j].to_string()), rest[j + 1..].to_string()),
+        None => (None, rest.to_string()),
+    };
+    // `foo..bar` carries an empty subsection (valid per C, matching
+    // nothing); keep it as `Some("")` so lookups stay exact.
+    Ok(CanonicalKey { section, subsection, key })
+}
+
 /// A byte index into a (possibly non-UTF8) byte string is a character
 /// boundary unless it points at a UTF-8 continuation byte.
 fn is_boundary(t: &[u8], i: usize) -> bool {
@@ -898,6 +1085,35 @@ fn load_roots(
     Ok(set)
 }
 
+/// Scoped variant of [`load_roots`]: `scopes[i]` tags every entry pulled in
+/// by `paths[i]` (parallel arrays). Includes inherit their root's scope.
+fn load_roots_scoped(
+    paths: &[PathBuf],
+    scopes: &[(ConfigScope, PathBuf)],
+    ctx: &IncludeContext,
+    require_first: bool,
+    collect_extra: &[PathBuf],
+) -> Result<Vec<ScopedEntry>, ConfigError> {
+    let mut remote_urls = Vec::new();
+    {
+        let mut seen = Vec::new();
+        for path in paths.iter().chain(collect_extra.iter()) {
+            collect_includes(path, None, &mut seen, 0, &mut remote_urls, false)?;
+        }
+    }
+    let mut out = Vec::new();
+    for (i, path) in paths.iter().enumerate() {
+        let mut seen = Vec::new();
+        let mut tmp = ConfigSet::new();
+        tmp.load_file(path, &mut seen, 0, ctx, &remote_urls, false, require_first && i == 0)?;
+        let scope = scopes.get(i).map(|(s, _)| *s).unwrap_or(ConfigScope::Command);
+        for entry in tmp.entries {
+            out.push(ScopedEntry { scope, entry });
+        }
+    }
+    Ok(out)
+}
+
 /// Split a section header body into section and optional subsection.
 fn split_section(inner: &str) -> (String, Option<String>) {
     // Section names are case-insensitive (C git lowercases them);
@@ -1007,13 +1223,36 @@ fn unquote_value(value: &str) -> Result<String, ConfigError> {
     Ok(out)
 }
 
-/// Parse a boolean per git's rules (case-insensitive, like C
-/// `git_parse_maybe_bool`: `true/yes/on/1` and the empty string are true,
-/// `false/no/off/0` are false).
+/// Parse a boolean per git's rules (C `git_parse_maybe_bool`: `true/yes/on`
+/// (plus any nonzero int, `1`) are true, `false/no/off` (plus `0`) are
+/// false, the empty string is false; a bare key (NULL value) is true, which
+/// callers handle before reaching here).
 pub fn parse_bool(v: &str) -> Option<bool> {
-    match v.trim().to_ascii_lowercase().as_str() {
-        "" | "yes" | "on" | "true" | "1" => Some(true),
-        "no" | "off" | "false" | "0" => Some(false),
+    if let Some(b) = parse_bool_text(v) {
+        return Some(b);
+    }
+    // C falls back to `git_parse_int` (`!!v`).
+    match parse_git_int(v, i32::MAX as i128) {
+        Ok(n) => Some(n != 0),
+        Err(_) => None,
+    }
+}
+
+/// C `git_parse_maybe_bool_text` (no int fallback, no empty-means-true):
+/// `true/yes/on` are true, the empty string and `false/no/off` are false.
+/// Used by `--bool-or-int`.
+pub fn parse_bool_text(v: &str) -> Option<bool> {
+    match v {
+        _ if v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes") || v.eq_ignore_ascii_case("on") => {
+            Some(true)
+        }
+        "" => Some(false),
+        _ if v.eq_ignore_ascii_case("false")
+            || v.eq_ignore_ascii_case("no")
+            || v.eq_ignore_ascii_case("off") =>
+        {
+            Some(false)
+        }
         _ => None,
     }
 }
@@ -1045,7 +1284,7 @@ pub fn canonicalize_typed(ty: ConfigValueType, key: &str, value: &str) -> Result
             .map(|n| n.to_string())
             .map_err(|e| numeric_error(key, value, e)),
         ConfigValueType::BoolOrInt => {
-            if let Some(b) = parse_bool(value) {
+            if let Some(b) = parse_bool_text(value) {
                 return Ok(b.to_string());
             }
             parse_git_int(value, i32::MAX as i128)
@@ -1223,7 +1462,9 @@ mod tests {
 
     #[test]
     fn bool_values() {
-        assert_eq!(parse_bool(""), Some(true));
+        // Probed on the tree binary: the empty string is false, while a
+        // bare key (NULL value) reads true before ever reaching here.
+        assert_eq!(parse_bool(""), Some(false));
         assert_eq!(parse_bool("true"), Some(true));
         assert_eq!(parse_bool("yes"), Some(true));
         assert_eq!(parse_bool("on"), Some(true));
@@ -1844,7 +2085,7 @@ mod props {
         /// for canonical ones and appends canonical sections).
         #[test]
         fn file_edit_never_panics(text: String, key in "[a-z]{1,8}", value in "[a-z0-9 ;#]{0,12}") {
-            let edited = super::file::set_value(&text, "s", None, &key, &value)
+            let edited = super::file::set_value(&text, "s", None, &key, &value, None)
                 .unwrap_or_else(|_| text.clone());
             if ConfigSet::parse(text.as_bytes()).is_ok() {
                 prop_assert!(ConfigSet::parse(edited.as_bytes()).is_ok());
@@ -1858,8 +2099,8 @@ mod props {
             v1 in "[a-z0-9]{0,10}", v2 in "[a-z0-9]{0,10}"
         ) {
             let text = format!("[{section}]\n\t{key} = {v1}\n# c\n[other]\n\tz = 1\n");
-            let once = super::file::set_value(&text, &section, None, &key, &v2).unwrap();
-            let twice = super::file::set_value(&once, &section, None, &key, &v2).unwrap();
+            let once = super::file::set_value(&text, &section, None, &key, &v2, None).unwrap();
+            let twice = super::file::set_value(&once, &section, None, &key, &v2, None).unwrap();
             prop_assert_eq!(once, twice);
         }
 
