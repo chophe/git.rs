@@ -824,6 +824,35 @@ fn display_path(path: &Path) -> String {
     path.display().to_string()
 }
 
+/// C's display name for a scope-selected file: global/system files
+/// print absolute and verbatim (never relativized, even under the
+/// cwd); repo files render relative to the work-tree root
+/// (`.git/config` from anywhere) or the git dir when bare
+/// (`config`), matching C's post-chdir layout.
+fn scope_display_name(
+    repo: Option<&git_core::Repository>,
+    scope: ConfigScope,
+    path: &std::path::Path,
+) -> String {
+    if matches!(scope, ConfigScope::Global | ConfigScope::System) {
+        return path.display().to_string();
+    }
+    if let Some(r) = repo {
+        if let Some(wt) = &r.work_tree {
+            if let Ok(rel) = path.strip_prefix(wt) {
+                if !rel.as_os_str().is_empty() {
+                    return rel.display().to_string();
+                }
+            }
+        } else if let Ok(rel) = path.strip_prefix(&r.git_dir) {
+            if !rel.as_os_str().is_empty() {
+                return rel.display().to_string();
+            }
+        }
+    }
+    display_path(path)
+}
+
 /// C `die_errno` reason for config-file reads: the bare `strerror` text.
 fn io_reason(e: &std::io::Error) -> String {
     match e.kind() {
@@ -1008,7 +1037,7 @@ fn load_read_source(
             let repo = repo.ok_or_else(|| CommandError::fatal("fatal: not in a git directory"))?;
             scope_file(repo, loc)?
         };
-        let display = display_path(&path);
+        let display = scope_display_name(repo, scope, &path);
         // Existence check first: missing reads as empty (list dies on the
         // marker below), unreadable dies — like C.
         let data = match std::fs::read(&path) {
@@ -1066,7 +1095,9 @@ fn load_read_source(
             worktree: repo.work_tree.clone(),
             git_dir_verbatim: repo.git_dir_specified.clone(),
         };
-        let scoped = ConfigSet::load_repo_scoped(&scopes).map_err(|e| match e {
+        // C skips include-following on the layered read under
+        // `--no-includes` (the flag defaults on only with no selector).
+        let scoped = ConfigSet::load_repo_scoped(&scopes, respect).map_err(|e| match e {
             ConfigError::BadLine { line, file } => {
                 let name = file
                     .map(|p| display_path(&p))
@@ -1080,7 +1111,7 @@ fn load_read_source(
                 .entry
                 .origin
                 .as_ref()
-                .map(|p| display_path(p))
+                .map(|p| scope_display_name(Some(repo), s.scope, p))
                 .unwrap_or_default();
             entries.push(LoadedEntry { scope: s.scope, origin: OriginType::File, filename, entry: s.entry });
         }
@@ -1095,7 +1126,7 @@ fn load_read_source(
             roots.push((ConfigScope::Global, g));
         }
         for (scope, path) in roots {
-            let display = display_path(&path);
+            let display = scope_display_name(repo, scope, &path);
             if !path.exists() {
                 continue;
             }
@@ -2567,8 +2598,15 @@ fn write_display_name(ctx: &RepoContext, repo: Option<&git_core::Repository>, lo
     if let Some(file) = &loc.file {
         return file.clone();
     }
+    let scope = if loc.global {
+        ConfigScope::Global
+    } else if loc.system {
+        ConfigScope::System
+    } else {
+        ConfigScope::Local
+    };
     match write_target_file(ctx, repo, loc) {
-        Ok(p) => display_path(&p),
+        Ok(p) => scope_display_name(repo, scope, &p),
         Err(_) => ".git/config".to_string(),
     }
 }

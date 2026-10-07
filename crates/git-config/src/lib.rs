@@ -150,7 +150,7 @@ impl ConfigSet {
     /// Parse configuration from a file with repository context for
     /// conditional includes.
     pub fn from_file_with(path: &Path, ctx: &IncludeContext) -> Result<ConfigSet, ConfigError> {
-        load_roots(&[path.to_path_buf()], ctx, true, &[])
+        load_roots(&[path.to_path_buf()], ctx, true, &[], true)
     }
 
     /// Recursive include loader (phase B): appends `path`'s entries, then
@@ -167,6 +167,7 @@ impl ConfigSet {
         remote_urls: &[String],
         under_hasconfig: bool,
         required: bool,
+        follow_includes: bool,
     ) -> Result<(), ConfigError> {
         if !path.exists() {
             if required {
@@ -182,6 +183,10 @@ impl ConfigSet {
             return Err(ConfigError::RemoteUrlForbidden);
         }
         self.entries.extend(entries);
+        if !follow_includes {
+            seen.pop();
+            return Ok(());
+        }
         for directive in &directives {
             let inc = resolve_include_path(&directive.value, path.parent());
             let is_hasconfig = directive.condition.as_deref().is_some_and(is_hasconfig_condition);
@@ -205,6 +210,7 @@ impl ConfigSet {
                 remote_urls,
                 under_hasconfig || is_hasconfig,
                 false,
+                follow_includes,
             )?;
         }
         seen.pop();
@@ -435,7 +441,7 @@ impl ConfigSet {
     /// are applied by the caller afterwards so they always win.
     pub fn load_repo_scopes(scopes: &RepoScopes) -> Result<ConfigSet, ConfigError> {
         let mut set = ConfigSet::new();
-        for scoped in load_scoped_roots_for(scopes)? {
+        for scoped in load_scoped_roots_for(scopes, true)? {
             set.entries.push(scoped.entry);
         }
         Ok(set)
@@ -446,14 +452,20 @@ impl ConfigSet {
     /// order; the `hasconfig:` remote pre-pass spans all roots, like C's
     /// lazy `populate_remote_urls`). The `config` command uses this for
     /// `--show-origin`/`--show-scope` and location-qualified type errors.
-    pub fn load_repo_scoped(scopes: &RepoScopes) -> Result<Vec<ScopedEntry>, ConfigError> {
-        load_scoped_roots_for(scopes)
+    pub fn load_repo_scoped(
+        scopes: &RepoScopes,
+        follow_includes: bool,
+    ) -> Result<Vec<ScopedEntry>, ConfigError> {
+        load_scoped_roots_for(scopes, follow_includes)
     }
 }
 
 /// Layered repository scopes with per-entry scope tags (C
 /// `do_git_config_sequence` in `config.c`).
-fn load_scoped_roots_for(scopes: &RepoScopes) -> Result<Vec<ScopedEntry>, ConfigError> {
+fn load_scoped_roots_for(
+    scopes: &RepoScopes,
+    follow_includes: bool,
+) -> Result<Vec<ScopedEntry>, ConfigError> {
     let mut roots: Vec<(ConfigScope, PathBuf)> = Vec::new();
     if env_allows_system() {
         roots.push((ConfigScope::System, system_config_path()));
@@ -474,7 +486,7 @@ fn load_scoped_roots_for(scopes: &RepoScopes) -> Result<Vec<ScopedEntry>, Config
         worktree: scopes.worktree.clone(),
         head_branch: resolve_head_branch(&scopes.git_dir),
     };
-    let mut out = load_roots_scoped(&paths, &roots, &ctx, false, &[])?;
+    let mut out = load_roots_scoped(&paths, &roots, &ctx, false, &[], follow_includes)?;
     // Re-resolve the merged set for the worktree gate (flag AND explicit
     // version, probed on the tree binary), exactly as before.
     let mut merged = ConfigSet::new();
@@ -491,6 +503,7 @@ fn load_scoped_roots_for(scopes: &RepoScopes) -> Result<Vec<ScopedEntry>, Config
             &ctx,
             false,
             &paths,
+            follow_includes,
         )?;
         out.extend(wt);
     }
@@ -1071,9 +1084,10 @@ fn load_roots(
     ctx: &IncludeContext,
     require_first: bool,
     collect_extra: &[PathBuf],
+    follow_includes: bool,
 ) -> Result<ConfigSet, ConfigError> {
     let mut remote_urls = Vec::new();
-    {
+    if follow_includes {
         let mut seen = Vec::new();
         for path in paths.iter().chain(collect_extra.iter()) {
             collect_includes(path, None, &mut seen, 0, &mut remote_urls, false)?;
@@ -1082,7 +1096,16 @@ fn load_roots(
     let mut set = ConfigSet::new();
     for (i, path) in paths.iter().enumerate() {
         let mut seen = Vec::new();
-        set.load_file(path, &mut seen, 0, ctx, &remote_urls, false, require_first && i == 0)?;
+        set.load_file(
+            path,
+            &mut seen,
+            0,
+            ctx,
+            &remote_urls,
+            false,
+            require_first && i == 0,
+            follow_includes,
+        )?;
     }
     Ok(set)
 }
@@ -1095,9 +1118,10 @@ fn load_roots_scoped(
     ctx: &IncludeContext,
     require_first: bool,
     collect_extra: &[PathBuf],
+    follow_includes: bool,
 ) -> Result<Vec<ScopedEntry>, ConfigError> {
     let mut remote_urls = Vec::new();
-    {
+    if follow_includes {
         let mut seen = Vec::new();
         for path in paths.iter().chain(collect_extra.iter()) {
             collect_includes(path, None, &mut seen, 0, &mut remote_urls, false)?;
@@ -1107,7 +1131,16 @@ fn load_roots_scoped(
     for (i, path) in paths.iter().enumerate() {
         let mut seen = Vec::new();
         let mut tmp = ConfigSet::new();
-        tmp.load_file(path, &mut seen, 0, ctx, &remote_urls, false, require_first && i == 0)?;
+        tmp.load_file(
+            path,
+            &mut seen,
+            0,
+            ctx,
+            &remote_urls,
+            false,
+            require_first && i == 0,
+            follow_includes,
+        )?;
         let scope = scopes.get(i).map(|(s, _)| *s).unwrap_or(ConfigScope::Command);
         for entry in tmp.entries {
             out.push(ScopedEntry { scope, entry });

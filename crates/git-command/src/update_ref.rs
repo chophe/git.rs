@@ -294,6 +294,18 @@ fn log_single_update(
 ) {
     let target = store.deref_name_opt(name, deref);
     let new_now = store.resolve(&target).unwrap_or(*new);
+    // C logs (and writes) nothing for a no-op oid update: old ==
+    // new on a non-symref target, even with --create-reflog — except
+    // that a no-op on the current branch still appends the HEAD
+    // log-only entry (C `split_head_update`).
+    if old == &new_now && read_symref_target(repo, &target).is_none() {
+        if store.head_symbolic_target().as_deref() == Some(target.as_str()) && target != "HEAD" {
+            if let Ok(ident) = crate::checkout_core::committer_ident(repo) {
+                git_refs::reflog::log_update(repo, "HEAD", old, &new_now, &ident, msg);
+            }
+        }
+        return;
+    }
     let Ok(ident) = crate::checkout_core::committer_ident(repo) else { return };
     // C forces the log with `--create-reflog`; otherwise the standard
     // gating applies (`--no-create-reflog` is an accepted no-op).
@@ -796,6 +808,18 @@ impl<'x> BatchRunner<'x> {
                 }
                 None => continue,
             };
+            // C logs (and writes) nothing for a no-op oid update —
+            // except the HEAD log-only entry when the current branch
+            // is the target (C `split_head_update`).
+            if !plog.is_symref_write
+                && new == plog.old
+                && read_symref_target(&self.repo, &plog.target).is_none()
+            {
+                if head_target.as_deref() == Some(plog.target.as_str()) && plog.target != "HEAD" {
+                    self.append_log("HEAD", &plog.old, &new, &ident);
+                }
+                continue;
+            }
             self.append_log(&plog.target, &plog.old, &new, &ident);
             if plog.target != plog.name {
                 self.append_log(&plog.name, &plog.old, &new, &ident);

@@ -343,10 +343,28 @@ fn append_pair(
             lines.insert(at, pair);
         }
         None => {
-            lines.push(render_section(&section.to_ascii_lowercase(), subsection));
-            lines.push(pair);
+            // A new section lands flush at EOF (C never inserts a
+            // blank separator): before the trailing empty split when
+            // the file ends in a newline.
+            let mut at = lines.len();
+            if at > 0 && lines[at - 1].is_empty() {
+                at -= 1;
+            }
+            lines.insert(at, render_section(&section.to_ascii_lowercase(), subsection));
+            lines.insert(at + 1, pair);
         }
     }
+}
+
+/// Reassemble lines after an append: C's `write_pair` always ends
+/// the pair with a newline, so a file that gains content is always
+/// newline-terminated (unlike pure removals, which preserve bytes).
+fn finish_append(lines: &[String]) -> String {
+    let mut out = lines.join("\n");
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out
 }
 
 /// Last matching section header line, if any.
@@ -386,7 +404,7 @@ pub fn set_value(
                 subsection,
                 render_pair(&key.to_ascii_lowercase(), value, comment),
             );
-            Ok(lines.join("\n"))
+            Ok(finish_append(&lines))
         }
         1 => {
             let span = &doc.spans[hits[0]];
@@ -419,7 +437,7 @@ pub fn add_value(
         subsection,
         render_pair(&key.to_ascii_lowercase(), value, comment),
     );
-    lines.join("\n")
+    finish_append(&lines)
 }
 
 /// Whether `matcher` (if any) accepts the span's parsed value.

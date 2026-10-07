@@ -491,6 +491,15 @@ impl<'a> Transaction<'a> {
                 (op.symref_content(), false)
             }
         };
+        // C files-backend: a non-symref oid update whose locked old
+        // value already equals the new one sets neither NEEDS_COMMIT
+        // bit — `update-ref <ref> <same-sha>` writes nothing and logs
+        // nothing (a lock is still taken, then closed, unobservable).
+        let noop = match (&op, &current) {
+            (TxnOp::Set { new, .. }, Current::Oid(old)) => new != null && old == new,
+            _ => false,
+        };
+        let content = if noop { None } else { content };
         // Deletes prune the packed entry too (C removes packed refs on
         // delete); remembered for the commit phase.
         let packed_prune = if op.is_delete() { Some(target.clone()) } else { None };
