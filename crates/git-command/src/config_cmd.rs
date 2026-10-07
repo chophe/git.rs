@@ -26,41 +26,9 @@ use git_config::{
     ConfigError, ConfigScope, ConfigSet, ConfigValueType, IncludeContext,
 };
 
-// C `CONFIG_FLAGS_*` bitfield (builtin/config.c).
-const CONFIG_FLAGS_FIXED_VALUE: u32 = 1 << 0;
-const CONFIG_FLAGS_MULTI_REPLACE: u32 = 1 << 1;
-
 // ---------------------------------------------------------------------------
 // Usage texts (byte-exact, captured from the tree binary)
 // ---------------------------------------------------------------------------
-
-const LOCATION_HELP: &str = "Config file location
-    --[no-]global         use global config file
-    --[no-]system         use system config file
-    --[no-]local          use repository config file
-    --[no-]worktree       use per-worktree config file
-    -f, --[no-]file <file>
-                          use given config file
-    --[no-]blob <blob-id> read config from given blob object
-";
-
-const DISPLAY_HELP: &str = "Display options
-    -z, --[no-]null       terminate values with NUL byte
-    --[no-]name-only      show variable names only
-    --[no-]show-origin    show origin of config (file, standard input, blob, command line)
-    --[no-]show-scope     show scope of config (worktree, local, global, system, command)
-    --[no-]show-names     show config keys in addition to their values
-
-Type
-    -t, --[no-]type <type>
-                          value is given this type
-    --bool                value is \"true\" or \"false\"
-    --int                 value is decimal number
-    --bool-or-int         value is --bool or --int
-    --bool-or-str         value is --bool or string
-    --path                value is a path (file or directory name)
-    --expiry-date         value is an expiry date
-";
 
 const LEGACY_USAGE: &str = "usage: git config list [<file-option>] [<display-option>] [--includes]
    or: git config get [<file-option>] [<display-option>] [--includes] [--all] [--regexp] [--value=<pattern>] [--fixed-value] [--default=<default>] [--url=<url>] <name>
@@ -119,7 +87,7 @@ Other
     --[no-]comment <value>
                           human-readable comment string (# will be prepended as needed)
     --[no-]fixed-value    use string equality when comparing values to value pattern
-    --[no-]includes       respect include directives on lookup";
+    --[no-]includes       respect include directives on lookup\n";
 
 const LIST_USAGE: &str = "usage: git config list [<file-option>] [<display-option>] [--includes]
 
@@ -150,7 +118,7 @@ Type
     --expiry-date         value is an expiry date
 
 Other
-    --[no-]includes       respect include directives on lookup";
+    --[no-]includes       respect include directives on lookup\n";
 
 const GET_USAGE: &str = "usage: git config get [<file-option>] [<display-option>] [--includes] [--all] [--regexp=<regexp>] [--value=<pattern>] [--fixed-value] [--default=<default>] <name>
 
@@ -191,7 +159,7 @@ Type
 Other
     --[no-]includes       respect include directives on lookup
     --[no-]default <value>
-                          use default value when missing entry";
+                          use default value when missing entry\n";
 
 const SET_USAGE: &str = "usage: git config set [<file-option>] [--type=<type>] [--comment=<message>] [--all] [--value=<pattern>] [--fixed-value] <name> <value>
 
@@ -223,7 +191,7 @@ Filter
 Other
     --[no-]comment <value>
                           human-readable comment string (# will be prepended as needed)
-    --[no-]append         add a new line without altering any existing values";
+    --[no-]append         add a new line without altering any existing values\n";
 
 const UNSET_USAGE: &str = "usage: git config unset [<file-option>] [--all] [--value=<pattern>] [--fixed-value] <name>
 
@@ -240,7 +208,7 @@ Filter
     --[no-]all            unset all multi-valued config options
     --[no-]value <pattern>
                           unset multi-valued config options with matching values
-    --[no-]fixed-value    use string equality when comparing values to value pattern";
+    --[no-]fixed-value    use string equality when comparing values to value pattern\n";
 
 const RENAME_SECTION_USAGE: &str = "usage: git config rename-section [<file-option>] <old-name> <new-name>
 
@@ -251,7 +219,7 @@ Config file location
     --[no-]worktree       use per-worktree config file
     -f, --[no-]file <file>
                           use given config file
-    --[no-]blob <blob-id> read config from given blob object";
+    --[no-]blob <blob-id> read config from given blob object\n";
 
 const REMOVE_SECTION_USAGE: &str = "usage: git config remove-section [<file-option>] <name>
 
@@ -262,7 +230,7 @@ Config file location
     --[no-]worktree       use per-worktree config file
     -f, --[no-]file <file>
                           use given config file
-    --[no-]blob <blob-id> read config from given blob object";
+    --[no-]blob <blob-id> read config from given blob object\n";
 
 const EDIT_USAGE: &str = "usage: git config edit [<file-option>]
 
@@ -273,7 +241,7 @@ Config file location
     --[no-]worktree       use per-worktree config file
     -f, --[no-]file <file>
                           use given config file
-    --[no-]blob <blob-id> read config from given blob object";
+    --[no-]blob <blob-id> read config from given blob object\n";
 
 // ---------------------------------------------------------------------------
 // Parsed options
@@ -358,8 +326,60 @@ fn set_cli_type(slot: &mut Option<CliType>, t: CliType) -> Result<(), CommandErr
 
 /// A parse-options style error: `error: unknown option \`X'` plus the
 /// subcommand usage block, exit 129.
-fn unknown_option(usage: &'static str, opt: &str) -> CommandError {
-    CommandError::usage(format!("error: unknown option `{opt}'\n{usage}"))
+fn unknown_option(usage: &'static str, full: &str) -> CommandError {
+    CommandError::usage(format!("error: unknown option `{full}'\n{usage}"))
+}
+
+/// C echoes the option exactly as typed (including a `no-`
+/// prefix and any `=value`) in unknown-option errors.
+fn full_opt_name(name: &str, negated: bool, inline: Option<&str>) -> String {
+    let base = if negated { format!("no-{name}") } else { name.to_string() };
+    match inline {
+        Some(v) => format!("{base}={v}"),
+        None => base,
+    }
+}
+
+/// C `do_get_value` for a `PARSE_OPT_NOARG | PARSE_OPT_NONEG`
+/// option (the type flags and the `OPT_CMDMODE` actions):
+/// the no- form is not found at all, and `--flag=value` has no
+/// value to take.
+fn check_cmd_flag(
+    name: &str,
+    negated: bool,
+    inline: Option<&str>,
+    usage: &'static str,
+) -> Result<(), CommandError> {
+    if negated {
+        return Err(unknown_option(
+            usage,
+            &full_opt_name(name, negated, inline),
+        ));
+    }
+    if inline.is_some() {
+        return Err(CommandError::usage(format!(
+            "error: option `{name}' takes no value"
+        )));
+    }
+    Ok(())
+}
+
+/// C `do_get_value`: a negated option never takes a value;
+/// neither does a no-value option.
+fn check_opt_value(
+    name: &str,
+    negated: bool,
+    noarg: bool,
+    inline: Option<&str>,
+) -> Result<(), CommandError> {
+    if inline.is_some() && (negated || noarg) {
+        let full = full_opt_name(name, negated, None);
+        // C prints this one-liner without the usage block.
+        return Err(CommandError::usage(format!(
+            "error: option `{full}' takes no value"
+        )));
+    }
+    Ok(())
 }
 
 /// Parse one `--type`/`-t` value: `unrecognized --type argument` dies 128.
@@ -386,40 +406,58 @@ fn apply_loc_opt(
     name: &str,
     negated: bool,
     value: Option<&str>,
-    take_arg: &mut Option<String>,
-    usage: &'static str,
-) -> Result<(), CommandError> {
+    take_arg: &mut Option<PendingArg>,
+    _usage: &'static str,
+    mode: OptMode,
+) -> Result<bool, CommandError> {
     // Options taking a separate `--opt value` or `--opt=value` argument.
     if take_arg.is_some() {
-        return Err(unknown_option(usage, name));
+        return Ok(false);
     }
     match name {
-        "global" if value.is_none() => loc.global = !negated,
-        "system" if value.is_none() => loc.system = !negated,
-        "local" if value.is_none() => loc.local = !negated,
-        "worktree" if value.is_none() => loc.worktree = !negated,
+        "global" => {
+            check_opt_value(name, negated, true, value)?;
+            loc.global = !negated;
+        }
+        "system" => {
+            check_opt_value(name, negated, true, value)?;
+            loc.system = !negated;
+        }
+        "local" => {
+            check_opt_value(name, negated, true, value)?;
+            loc.local = !negated;
+        }
+        "worktree" => {
+            check_opt_value(name, negated, true, value)?;
+            loc.worktree = !negated;
+        }
         "file" => {
+            check_opt_value(name, negated, false, value)?;
             if negated {
                 loc.file = None;
             } else if let Some(v) = value {
                 loc.file = Some(v.to_string());
             } else {
-                *take_arg = Some("file".to_string());
+                *take_arg = Some(PendingArg::long("file"));
             }
         }
         "blob" => {
+            check_opt_value(name, negated, false, value)?;
             if negated {
                 loc.blob = None;
             } else if let Some(v) = value {
                 loc.blob = Some(v.to_string());
             } else {
-                *take_arg = Some("blob".to_string());
+                *take_arg = Some(PendingArg::long("blob"));
             }
         }
-        "includes" if value.is_none() => loc.includes = Some(!negated),
-        _ => return Err(unknown_option(usage, name)),
+        "includes" if mode.allows_includes() => {
+            check_opt_value(name, negated, true, value)?;
+            loc.includes = Some(!negated);
+        }
+        _ => return Ok(false),
     }
-    Ok(())
+    Ok(true)
 }
 
 /// Apply one parsed display option.
@@ -429,81 +467,136 @@ fn apply_disp_opt(
     name: &str,
     negated: bool,
     value: Option<&str>,
-    take_arg: &mut Option<String>,
+    take_arg: &mut Option<PendingArg>,
     usage: &'static str,
+    mode: OptMode,
     with_type_flags: bool,
     with_default: bool,
-) -> Result<(), CommandError> {
+) -> Result<bool, CommandError> {
+    // Display options exist only in the legacy, get, and list
+    // tables (C `CONFIG_DISPLAY_OPTIONS`).
+    if !mode.allows_display() {
+        return Ok(false);
+    }
     match name {
-        "null" if value.is_none() => disp.end_nul = !negated,
-        "name-only" if value.is_none() => disp.omit_values = !negated,
-        "show-origin" if value.is_none() => disp.show_origin = !negated,
-        "show-scope" if value.is_none() => disp.show_scope = !negated,
-        "show-names" if value.is_none() => disp.show_keys = !negated,
-        "type" => {
+        "null" => {
+            check_opt_value(name, negated, true, value)?;
+            disp.end_nul = !negated;
+        }
+        "name-only" => {
+            check_opt_value(name, negated, true, value)?;
+            disp.omit_values = !negated;
+        }
+        "show-origin" => {
+            check_opt_value(name, negated, true, value)?;
+            disp.show_origin = !negated;
+        }
+        "show-scope" => {
+            check_opt_value(name, negated, true, value)?;
+            disp.show_scope = !negated;
+        }
+        "show-names" => {
+            check_opt_value(name, negated, true, value)?;
+            disp.show_keys = !negated;
+        }
+        "type" if with_type_flags => {
+            check_opt_value(name, negated, false, value)?;
             if negated {
                 disp.cli_type = None;
             } else if let Some(v) = value {
                 set_cli_type(&mut disp.cli_type, parse_type_value(v)?)?;
             } else {
-                *take_arg = Some("type".to_string());
+                *take_arg = Some(PendingArg::long("type"));
             }
         }
-        "bool" if with_type_flags && value.is_none() && !negated => {
+        // C `OPT_CALLBACK_VALUE` is PARSE_OPT_NONEG: the no- form
+        // is unknown, and `--flag=value` takes no value.
+        "bool" if with_type_flags => {
+            check_cmd_flag(name, negated, value, usage)?;
             set_cli_type(&mut disp.cli_type, CliType::Bool)?;
         }
-        "int" if with_type_flags && value.is_none() && !negated => {
+        "int" if with_type_flags => {
+            check_cmd_flag(name, negated, value, usage)?;
             set_cli_type(&mut disp.cli_type, CliType::Int)?;
         }
-        "bool-or-int" if with_type_flags && value.is_none() && !negated => {
+        "bool-or-int" if with_type_flags => {
+            check_cmd_flag(name, negated, value, usage)?;
             set_cli_type(&mut disp.cli_type, CliType::BoolOrInt)?;
         }
-        "bool-or-str" if with_type_flags && value.is_none() && !negated => {
+        "bool-or-str" if with_type_flags => {
+            check_cmd_flag(name, negated, value, usage)?;
             set_cli_type(&mut disp.cli_type, CliType::BoolOrStr)?;
         }
-        "path" if with_type_flags && value.is_none() && !negated => {
+        "path" if with_type_flags => {
+            check_cmd_flag(name, negated, value, usage)?;
             set_cli_type(&mut disp.cli_type, CliType::Path)?;
         }
-        "expiry-date" if with_type_flags && value.is_none() && !negated => {
+        "expiry-date" if with_type_flags => {
+            check_cmd_flag(name, negated, value, usage)?;
             set_cli_type(&mut disp.cli_type, CliType::ExpiryDate)?;
         }
-        "default" if with_default => {
+        "default" if with_default && mode.allows_default() => {
+            check_opt_value(name, negated, false, value)?;
             if negated {
                 disp.default_value = None;
             } else if let Some(v) = value {
                 disp.default_value = Some(v.to_string());
             } else {
-                *take_arg = Some("default".to_string());
+                *take_arg = Some(PendingArg::long("default"));
             }
         }
-        _ => return Err(unknown_option(usage, name)),
+        _ => return Ok(false),
     }
-    Ok(())
+    Ok(true)
 }
 
-/// Consume a pending `--opt value` argument. `value_slot`/`comment_slot`
-/// receive the action-specific `--value`/`--comment` payloads.
+/// A `--opt` still waiting for its separate value argument.
+struct PendingArg {
+    /// The option's long name: the slot it fills.
+    name: &'static str,
+    /// The short switch, when the option came from `-x`.
+    short: Option<char>,
+}
+
+impl PendingArg {
+    fn long(name: &'static str) -> Self {
+        PendingArg { name, short: None }
+    }
+    fn short(name: &'static str, c: char) -> Self {
+        PendingArg { name, short: Some(c) }
+    }
+}
+
+/// Outcome of consuming a pending `--opt <arg>` argument.
+enum Pending {
+    /// No option was pending; the argument is untouched.
+    None,
+    /// Consumed by a shared slot (file/blob/type/default).
+    Consumed,
+    /// Re-dispatched through the action-specific `extra`
+    /// closure (the `--value`/`--comment` slots live there).
+    Redispatch(String, String),
+}
+
+/// Consume a pending `--opt value` argument.
 fn take_pending(
     loc: &mut LocOpts,
     disp: &mut DispOpts,
-    pending: &mut Option<String>,
+    pending: &mut Option<PendingArg>,
     arg: &str,
-    value_slot: &mut Option<String>,
-    comment_slot: &mut Option<String>,
-) -> Result<bool, CommandError> {
-    let Some(which) = pending.take() else {
-        return Ok(false);
+) -> Result<Pending, CommandError> {
+    let Some(p) = pending.take() else {
+        return Ok(Pending::None);
     };
-    match which.as_str() {
+    match p.name {
         "file" => loc.file = Some(arg.to_string()),
         "blob" => loc.blob = Some(arg.to_string()),
         "type" => set_cli_type(&mut disp.cli_type, parse_type_value(arg)?)?,
         "default" => disp.default_value = Some(arg.to_string()),
-        "value" => *value_slot = Some(arg.to_string()),
-        "comment" => *comment_slot = Some(arg.to_string()),
+        "value" | "comment" => return Ok(Pending::Redispatch(p.name.to_string(), arg.to_string())),
         _ => {}
     }
-    Ok(true)
+    Ok(Pending::Consumed)
 }
 
 /// Full option parser shared by the legacy and subcommand spellings.
@@ -516,29 +609,43 @@ fn take_pending(
 fn parse_opts(
     args: &[String],
     usage: &'static str,
+    mode: OptMode,
     with_type_flags: bool,
     with_default: bool,
-    value_slot: &mut Option<String>,
-    comment_slot: &mut Option<String>,
     mut extra: impl FnMut(
         &mut LocOpts,
         &mut DispOpts,
         &str,
         bool,
         Option<&str>,
-        &mut Option<String>,
+        &mut Option<PendingArg>,
     ) -> Result<bool, CommandError>,
 ) -> Result<(LocOpts, DispOpts, Vec<String>), CommandError> {
     let mut loc = LocOpts::default();
     let mut disp = DispOpts::default();
     let mut rest: Vec<String> = Vec::new();
-    let mut pending: Option<String> = None;
+    let mut pending: Option<PendingArg> = None;
     let mut i = 0;
     while i < args.len() {
         let a = &args[i];
-        if take_pending(&mut loc, &mut disp, &mut pending, a, value_slot, comment_slot)? {
-            i += 1;
-            continue;
+        match take_pending(&mut loc, &mut disp, &mut pending, a)? {
+            // `--value <arg>` / `--comment <arg>`: route the
+            // separated argument back through `extra`, which owns
+            // the action-specific slots.
+            Pending::Redispatch(opt, arg) => {
+                if extra(&mut loc, &mut disp, &opt, false, Some(&arg), &mut pending)? {
+                    i += 1;
+                    continue;
+                }
+                return Err(unknown_option(usage, &opt));
+            }
+            // The shared slots consumed the argument: it is not
+            // a positional.
+            Pending::Consumed => {
+                i += 1;
+                continue;
+            }
+            Pending::None => {}
         }
         if a == "--" {
             rest.extend_from_slice(&args[i + 1..]);
@@ -553,13 +660,11 @@ fn parse_opts(
                 Some((o, v)) => (o, Some(v)),
                 None => (name, None),
             };
-            if apply_loc_opt(&mut loc, opt, negated, inline, &mut pending, usage).is_ok() {
+            if apply_loc_opt(&mut loc, opt, negated, inline, &mut pending, usage, mode)? {
                 i += 1;
                 continue;
             }
-            if apply_disp_opt(&mut disp, opt, negated, inline, &mut pending, usage, with_type_flags, with_default)
-                .is_ok()
-            {
+            if apply_disp_opt(&mut disp, opt, negated, inline, &mut pending, usage, mode, with_type_flags, with_default)? {
                 i += 1;
                 continue;
             }
@@ -567,7 +672,10 @@ fn parse_opts(
                 i += 1;
                 continue;
             }
-            return Err(unknown_option(usage, opt));
+            return Err(unknown_option(
+                usage,
+                &full_opt_name(opt, negated, inline),
+            ));
         }
         // Short options (bundled booleans allowed).
         let shorts: Vec<char> = a[1..].chars().collect();
@@ -589,7 +697,7 @@ fn parse_opts(
                     if !rest_chars.is_empty() {
                         loc.file = Some(rest_chars);
                     } else {
-                        pending = Some("file".to_string());
+                        pending = Some(PendingArg::short("file", shorts[j]));
                     }
                     break;
                 }
@@ -598,7 +706,7 @@ fn parse_opts(
                     if !rest_chars.is_empty() {
                         set_cli_type(&mut disp.cli_type, parse_type_value(&rest_chars)?)?;
                     } else {
-                        pending = Some("type".to_string());
+                        pending = Some(PendingArg::short("type", shorts[j]));
                     }
                     break;
                 }
@@ -610,13 +718,21 @@ fn parse_opts(
             j += 1;
         }
         if !consumed {
-            return Err(unknown_option(usage, &a[1..]));
+            return Err(CommandError::usage(format!(
+                "error: unknown switch `{}'\n{usage}",
+                shorts[j]
+            )));
         }
         i += 1;
     }
-    if pending.is_some() {
-        // C reports a missing option argument with the usage block.
-        return Err(unknown_option(usage, pending.as_deref().unwrap_or("")));
+    if let Some(p) = pending.take() {
+        // C: `option \`X' requires a value` / `switch \`X' requires a value`.
+        let msg = match p.short {
+            Some(c) => format!("error: switch `{c}' requires a value"),
+            None => format!("error: option `{}' requires a value", p.name),
+        };
+        // C prints this one-liner without the usage block.
+        return Err(CommandError::usage(msg));
     }
     Ok((loc, disp, rest))
 }
@@ -718,14 +834,6 @@ fn io_reason(e: &std::io::Error) -> String {
     }
 }
 
-/// Which scope-file operation targets (C `location_options_init` +
-/// `repo_config_set_in_file_gently` defaulting).
-struct WriteTarget {
-    path: PathBuf,
-    /// Display form for messages.
-    display: String,
-}
-
 /// Resolve the location selectors to a read source. Returns the loaded
 /// entries plus whether includes were respected. Errors die with C's exact
 /// texts (`only one config file at a time`, `--local`/`--blob`/`--worktree`
@@ -783,9 +891,8 @@ fn load_read_source(
         if obj.kind != git_object::ObjectKind::Blob {
             return Err(CommandError::fatal(format!("fatal: {blob_rev}: not a valid blob")));
         }
-        let mut set = ConfigSet::new();
-        match ConfigSet::parse(&obj.data) {
-            Ok(parsed) => set = parsed,
+        let set = match ConfigSet::parse(&obj.data) {
+            Ok(parsed) => parsed,
             Err(ConfigError::BadLine { line, .. }) => {
                 // C reports blob parse errors via error() + the list-path
                 // fatal (probed on the tree binary).
@@ -795,7 +902,7 @@ fn load_read_source(
             Err(e) => {
                 return Err(CommandError::fatal(format!("fatal: {e}")));
             }
-        }
+        };
         let _ = respect;
         let entries = set
             .entries()
@@ -843,7 +950,7 @@ fn load_read_source(
             }
         }
         let raw = PathBuf::from(file);
-        let disk = if raw.is_absolute() { raw.clone() } else { ctx.cwd.join(&raw) };
+        let disk = if raw.is_absolute() { raw.clone() } else { config_file_base(ctx, repo).join(&raw) };
         // Missing file: reads see an empty config (list dies); the display
         // keeps the as-given form, like C.
         let data = match std::fs::read(&disk) {
@@ -1120,48 +1227,62 @@ fn parse_expiry(value: &str) -> Option<u64> {
 /// unformattable values (list/get-all paths); otherwise the first failure
 /// is returned for the C-exact die. `key_dotted` is the canonical
 /// `section[.sub.]key` name for messages.
+/// C `format_config` result: a formatted value, a valueless
+/// key (C backs out the key delimiter and shows the key alone),
+/// or a skipped (`:(optional)` path missing) entry.
+enum Formatted {
+    Value(String),
+    Valueless,
+    Skip,
+}
+
 fn format_typed(
     cli_type: Option<CliType>,
     key_dotted: &str,
     value: Option<&str>,
     loc: &TypeLoc,
-) -> Result<Option<String>, TypeError> {
+) -> Result<Formatted, TypeError> {
     let Some(ty) = cli_type else {
-        return Ok(value.map(|v| v.to_string()));
+        return Ok(match value {
+            Some(v) => Formatted::Value(v.to_string()),
+            None => Formatted::Valueless,
+        });
     };
     match ty {
         CliType::Bool => {
             let Some(v) = value else {
-                return Ok(Some("true".to_string()));
+                return Ok(Formatted::Value("true".to_string()));
             };
             parse_bool(v)
-                .map(|b| Some(b.to_string()))
+                .map(|b| Formatted::Value(b.to_string()))
                 .ok_or_else(|| loc.render(format!("bad boolean config value '{v}' for '{key_dotted}'")))
         }
         CliType::Int => {
             let v = value.unwrap_or("");
             canonicalize_typed(ConfigValueType::Int, key_dotted, v)
-                .map(Some)
+                .map(Formatted::Value)
                 .map_err(|e| loc.int_error(&e.to_string()))
         }
         CliType::BoolOrInt => {
             if let Some(b) = value.and_then(parse_bool_text) {
                 // C `git_parse_maybe_bool_text` (empty counts as false).
-                return Ok(Some(b.to_string()));
+                return Ok(Formatted::Value(b.to_string()));
             }
             if value.is_none() {
-                return Ok(Some("false".to_string()));
+                return Ok(Formatted::Value("false".to_string()));
             }
             let v = value.unwrap_or("");
             canonicalize_typed(ConfigValueType::BoolOrInt, key_dotted, v)
-                .map(Some)
+                .map(Formatted::Value)
                 .map_err(|e| loc.int_error(&e.to_string()))
         }
         CliType::BoolOrStr => {
             let Some(v) = value else {
-                return Ok(Some("true".to_string()));
+                return Ok(Formatted::Value("true".to_string()));
             };
-            Ok(Some(parse_bool(v).map(|b| b.to_string()).unwrap_or_else(|| v.to_string())))
+            Ok(Formatted::Value(
+                parse_bool(v).map(|b| b.to_string()).unwrap_or_else(|| v.to_string()),
+            ))
         }
         CliType::Path => {
             let Some(v) = value else {
@@ -1175,9 +1296,9 @@ fn format_typed(
             match interpolate_display(path) {
                 Ok(expanded) => {
                     if optional && !Path::new(&expanded).exists() {
-                        return Ok(None);
+                        return Ok(Formatted::Skip);
                     }
-                    Ok(Some(expanded))
+                    Ok(Formatted::Value(expanded))
                 }
                 Err(msg) => Err(loc.render(msg)),
             }
@@ -1187,14 +1308,16 @@ fn format_typed(
                 return Err(loc.missing(key_dotted));
             };
             parse_expiry(v)
-                .map(|t| Some(t.to_string()))
+                .map(|t| Formatted::Value(t.to_string()))
                 .ok_or_else(|| loc.render(format!("'{v}' for '{key_dotted}' is not a valid timestamp")))
         }
         CliType::Color => {
             let Some(v) = value else {
                 return Err(loc.missing(key_dotted));
             };
-            color_parse_value(v).map(Some).ok_or_else(|| loc.color_error(v))
+            color_parse_value(v)
+                .map(Formatted::Value)
+                .ok_or_else(|| loc.color_error(v))
         }
     }
 }
@@ -1232,10 +1355,6 @@ impl TypeLoc {
     /// C `config_error_nonbool` on a bare key: `missing value for 'k'`.
     fn missing(&self, key_dotted: &str) -> TypeError {
         self.render(format!("missing value for '{key_dotted}'"))
-    }
-
-    fn die(&self, detail: String) -> TypeError {
-        self.render(detail)
     }
 
     fn int_error(&self, base: &str) -> TypeError {
@@ -1836,13 +1955,6 @@ fn match_urls(url: &UrlInfo, prefix: &UrlInfo) -> Option<UrlMatch> {
     Some(UrlMatch { hostmatch_len: prefix.host_len, pathmatch_len, user_matched })
 }
 
-/// C `cmp_matches`: more specific (longer host, then path, then user) wins.
-fn cmp_matches(a: &UrlMatch, b: &UrlMatch) -> std::cmp::Ordering {
-    a.hostmatch_len
-        .cmp(&b.hostmatch_len)
-        .then(a.pathmatch_len.cmp(&b.pathmatch_len))
-        .then(b.user_matched.cmp(&a.user_matched))
-}
 
 // ---------------------------------------------------------------------------
 // Matching + output (C `collect_config`, `show_all_config`, `get_value`)
@@ -1851,9 +1963,13 @@ fn cmp_matches(a: &UrlMatch, b: &UrlMatch) -> std::cmp::Ordering {
 /// Canonical dotted name for an entry (C lowercases section+key, keeps
 /// subsection case).
 fn dotted_name(e: &ConfigEntry) -> String {
+    let section = e.section.to_ascii_lowercase();
+    let key = e.key.to_ascii_lowercase();
     match &e.subsection {
-        Some(sub) => format!("{}.{}.{}", e.section.to_ascii_lowercase(), sub, e.key.to_ascii_lowercase()),
-        None => format!("{}.{}", e.section.to_ascii_lowercase(), e.key.to_ascii_lowercase()),
+        Some(sub) => format!("{section}.{sub}.{key}"),
+        // Before any section header C's var has no stem at all.
+        None if section.is_empty() => key,
+        None => format!("{section}.{key}"),
     }
 }
 
@@ -1875,7 +1991,7 @@ fn lowercase_pattern(pat: &str) -> String {
 fn render_entry(
     disp: &DispOpts,
     e: &LoadedEntry,
-    formatted_value: Option<String>,
+    formatted_value: Formatted,
     key_delim: char,
 ) -> Option<String> {
     let term = if disp.end_nul { '\0' } else { '\n' };
@@ -1902,16 +2018,25 @@ fn render_entry(
         line.push(term);
         return Some(line);
     }
-    let Some(value) = formatted_value else {
-        // Missing optional value (e.g. `:(optional)` path): skip the entry.
-        return None;
-    };
-    if disp.show_keys {
-        line.push(key_delim);
+    match formatted_value {
+        // C `format_config_path`: `:(optional)` missing files
+        // make format_config return -1 and the caller skips.
+        Formatted::Skip => None,
+        // C `format_config` TYPE_NONE with a NULL value: the
+        // key delimiter is backed out, only the key is shown.
+        Formatted::Valueless => {
+            line.push(term);
+            Some(line)
+        }
+        Formatted::Value(value) => {
+            if disp.show_keys {
+                line.push(key_delim);
+            }
+            line.push_str(&value);
+            line.push(term);
+            Some(line)
+        }
     }
-    line.push_str(&value);
-    line.push(term);
-    Some(line)
 }
 
 /// Write one rendered line (already terminated) to `out`.
@@ -2033,7 +2158,7 @@ fn run_get(
             Err(te) => return Err(emit_type_error(te)),
         };
         // Optional-missing values are skipped (status 1).
-        if formatted.is_none() {
+        if matches!(formatted, Formatted::Skip) {
             continue;
         }
         if let Some(line) = render_entry(disp, e, formatted, key_delim) {
@@ -2068,8 +2193,8 @@ fn run_get(
                 }
                 Err(te) => return Err(emit_type_error(te)),
             };
-            if let Some(value) = formatted {
-                if let Some(line) = render_entry(disp, &fake, Some(value), key_delim) {
+            if let Formatted::Value(value) = formatted {
+                if let Some(line) = render_entry(disp, &fake, Formatted::Value(value), key_delim) {
                     write_line(out, &line)?;
                     return Ok(());
                 }
@@ -2089,7 +2214,877 @@ fn run_get(
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Write path (C `repo_config_set[_multivar]_in_file_gently`)
+// ---------------------------------------------------------------------------
+
+/// How a value pattern constrains matches (C `config_store_data`:
+/// `value_pattern == NULL` matches all, `CONFIG_REGEX_NONE` matches
+/// none, else a regex or fixed string).
+enum WritePattern {
+    /// No pattern: every entry with the key matches.
+    All,
+    /// C `CONFIG_REGEX_NONE`: no entry matches (only add a new one).
+    None_,
+    /// Regex (or fixed string when `fixed`).
+    Pat(String),
+}
+
+/// C `normalize_value`: apply the display type to a value being
+/// written (`builtin/config.c`).
+fn normalize_value(
+    key: &str,
+    value: &str,
+    ty: Option<CliType>,
+) -> Result<String, CommandError> {
+    let Some(ty) = ty else {
+        return Ok(value.to_string());
+    };
+    match ty {
+        CliType::Path | CliType::ExpiryDate => Ok(value.to_string()),
+        CliType::Int => canonicalize_typed(ConfigValueType::Int, key, value)
+            .map_err(|e| CommandError::fatal(format!("fatal: {e}"))),
+        CliType::Bool => parse_bool(value)
+            .map(|b| b.to_string())
+            .ok_or_else(|| {
+                CommandError::fatal(format!(
+                    "fatal: bad boolean config value '{value}' for '{key}'"
+                ))
+            }),
+        CliType::BoolOrInt => {
+            if let Some(b) = parse_bool_text(value) {
+                return Ok(b.to_string());
+            }
+            canonicalize_typed(ConfigValueType::BoolOrInt, key, value)
+                .map_err(|e| CommandError::fatal(format!("fatal: {e}")))
+        }
+        CliType::BoolOrStr => Ok(parse_bool(value)
+            .map(|b| b.to_string())
+            .unwrap_or_else(|| value.to_string())),
+        CliType::Color => color_parse_value(value)
+            .map(|_| value.to_string())
+            .ok_or_else(|| {
+                CommandError::fatal(format!("fatal: cannot parse color '{value}'"))
+            }),
+    }
+}
+
+/// C `git_config_prepare_comment_string`: a comment beginning with
+/// whitespace then `#` is used as-is; a bare `#` gets a leading SP;
+/// anything else becomes ` # comment`.
+fn prepare_comment(comment: &str) -> Result<String, CommandError> {
+    if comment.contains('\n') {
+        return Err(CommandError::fatal(format!(
+            "fatal: no multi-line comment allowed: '{comment}'"
+        )));
+    }
+    let leading = comment.len() - comment.trim_start_matches([' ', '\t']).len();
+    if leading > 0 && comment.as_bytes()[leading] == b'#' {
+        return Ok(comment.to_string());
+    }
+    if comment.starts_with('#') {
+        return Ok(format!(" {comment}"));
+    }
+    Ok(format!(" # {comment}"))
+}
+
+/// Apply C `git_config_prepare_comment_string` to the
+/// `--comment` payload (dies on multi-line input).
+fn prepare_comment_opt(comment: Option<&str>) -> Result<Option<String>, CommandError> {
+    comment.map(prepare_comment).transpose()
+}
+
+/// C `check_write`: writes need a resolved config file or a
+/// repository (exit 128 with C's exact texts). Runs after
+/// `location_options_init`, so every selector but `-f -`
+/// (stdin resets the file to NULL) counts as having a file.
+fn check_write(
+    loc: &LocOpts,
+    repo: Option<&git_core::Repository>,
+) -> Result<(), CommandError> {
+    let has_file = loc
+        .file
+        .as_deref()
+        .map(|f| f != "-")
+        .unwrap_or(false)
+        || loc.global
+        || loc.system
+        || loc.local
+        || loc.worktree;
+    if !has_file && repo.is_none() {
+        return Err(CommandError::fatal("fatal: not in a git directory"));
+    }
+    if loc.file.as_deref() == Some("-") {
+        return Err(CommandError::fatal("fatal: writing to stdin is not supported"));
+    }
+    if loc.blob.is_some() {
+        return Err(CommandError::fatal("fatal: writing config blobs is not supported"));
+    }
+    Ok(())
+}
+
+/// C `section_name_is_ok`: non-empty, alphanumeric or dash before
+/// the first dot.
+fn section_name_is_ok(name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    name.bytes()
+        .take_while(|&b| b != b'.')
+        .all(|b| b == b'-' || b.is_ascii_alphanumeric())
+}
+
+/// Resolve the file a write targets (C `location_options_init`
+/// write checks + `check_write`, then the selector default).
+fn write_target_file(
+    ctx: &RepoContext,
+    repo: Option<&git_core::Repository>,
+    loc: &LocOpts,
+) -> Result<PathBuf, CommandError> {
+    // C `location_options_init`: mutual exclusion and the
+    // repo-requiring selectors.
+    let n_selectors = [loc.global, loc.system, loc.local, loc.worktree]
+        .iter()
+        .filter(|b| **b)
+        .count()
+        + loc.file.is_some() as usize
+        + loc.blob.is_some() as usize;
+    if n_selectors > 1 {
+        return Err(CommandError::usage("error: only one config file at a time"));
+    }
+    if repo.is_none() {
+        if loc.local {
+            return Err(CommandError::fatal(
+                "fatal: --local can only be used inside a git repository",
+            ));
+        }
+        if loc.worktree {
+            return Err(CommandError::fatal(
+                "fatal: --worktree can only be used inside a git repository",
+            ));
+        }
+    }
+    check_write(loc, repo)?;
+    if let Some(file) = &loc.file {
+        let raw = PathBuf::from(file);
+        return Ok(if raw.is_absolute() { raw } else { config_file_base(ctx, repo).join(&raw) });
+    }
+    if loc.global {
+        return git_config::global_config_file()
+            .ok_or_else(|| CommandError::fatal("fatal: $HOME not set"));
+    }
+    if loc.system {
+        return Ok(git_config::system_config_file());
+    }
+    if loc.local || loc.worktree {
+        let repo = repo.ok_or_else(|| {
+            CommandError::fatal("fatal: --local can only be used inside a git repository")
+        })?;
+        return Ok(scope_file(repo, loc)?.0);
+    }
+    let repo = repo.ok_or_else(|| CommandError::fatal("fatal: not in a git directory"))?;
+    Ok(repo.common_dir.join("config"))
+}
+
+/// C `repo_config_set_multivar_in_file_gently` over the `file.rs`
+/// splicer: replace (or, for `value == None`, remove) every entry
+/// matching key + pattern, appending when nothing matched and a
+/// value is given. `multi_replace` collapses several matches into
+/// one new pair (C's multi-replace flag); without it, more
+/// than one match is C's `CONFIG_NOTHING_SET` (warning + exit 5).
+fn config_multivar_write(
+    path: &Path,
+    section: &str,
+    subsection: Option<&str>,
+    key: &str,
+    value: Option<&str>,
+    pattern: &WritePattern,
+    fixed: bool,
+    multi_replace: bool,
+    comment: Option<&str>,
+) -> Result<(), CommandError> {
+    let dotted = match subsection {
+        Some(sub) => format!("{section}.{sub}.{key}"),
+        None => format!("{section}.{key}"),
+    };
+    // Count matches (C `store_aux` counting via `matches`).
+    let matcher = match pattern {
+        WritePattern::All => None,
+        WritePattern::None_ => return config_write_add(path, section, subsection, key, value, comment),
+        WritePattern::Pat(p) => {
+            Some(if fixed {
+                cfgfile::ValueMatcher::Fixed(p.clone())
+            } else {
+                cfgfile::ValueMatcher::compile(p, false).map_err(|_| {
+                    CommandError::error(format!("error: invalid pattern: {p}"))
+                })?
+            })
+        }
+    };
+    let text = read_file_text(path, &display_path(path))?;
+    let matches =
+        cfgfile::count_matches(&text, section, subsection, key, matcher.as_ref());
+
+    if value.is_none() {
+        // Unset: nothing matched (or several without multi-replace)
+        // is CONFIG_NOTHING_SET; several with it removes them all.
+        if matches == 0 {
+            return Err(CommandError::silent(5));
+        }
+        if matches > 1 && !multi_replace {
+            eprintln!("warning: {dotted} has multiple values");
+            return Err(CommandError::silent(5));
+        }
+        let (new_text, _) = cfgfile::unset_all(&text, section, subsection, key, matcher.as_ref());
+        return cfgfile::write_config_file(path, &new_text).map_err(|_| {
+            CommandError::error(format!("error: could not write config file {}", path.display()))
+        });
+    }
+    let value = value.unwrap();
+    if matches == 0 {
+        // No match: append the new pair (C writes section + pair).
+        let new_text = cfgfile::add_value(&text, section, subsection, key, value, comment);
+        return cfgfile::write_config_file(path, &new_text).map_err(|_| {
+            CommandError::error(format!("error: could not write config file {}", path.display()))
+        });
+    }
+    if matches > 1 && !multi_replace {
+        eprintln!("warning: {dotted} has multiple values");
+        return Err(CommandError::silent(5));
+    }
+    // Replace every match with the single new pair.
+    let (new_text, _) = cfgfile::replace_all(
+        &text,
+        section,
+        subsection,
+        key,
+        value,
+        matcher.as_ref(),
+        comment,
+    );
+    cfgfile::write_config_file(path, &new_text)
+        .map_err(|_| CommandError::error(format!(
+            "error: could not write config file {}",
+            path.display()
+        )))
+}
+
+/// C append path for `CONFIG_REGEX_NONE` (never matches): the new
+/// pair is always appended. `value` is always `Some` here.
+fn config_write_add(
+    path: &Path,
+    section: &str,
+    subsection: Option<&str>,
+    key: &str,
+    value: Option<&str>,
+    comment: Option<&str>,
+) -> Result<(), CommandError> {
+    let text = read_file_text(path, &display_path(path))?;
+    let value = value.unwrap_or("true");
+    let new_text = cfgfile::add_value(&text, section, subsection, key, value, comment);
+    cfgfile::write_config_file(path, &new_text)
+        .map_err(|_| CommandError::error(format!(
+            "error: could not write config file {}",
+            path.display()
+        )))
+}
+
+/// C `check_argc`: `wrong number of arguments` then exit 129.
+fn check_argc(argc: usize, min: usize, max: usize) -> Result<(), CommandError> {
+    if argc >= min && argc <= max {
+        return Ok(());
+    }
+    if min == max {
+        Err(CommandError::usage(format!(
+            "error: wrong number of arguments, should be {min}"
+        )))
+    } else {
+        Err(CommandError::usage(format!(
+            "error: wrong number of arguments, should be from {min} to {max}"
+        )))
+    }
+}
+
+/// C `prefix_filename` via `OPT_FILENAME`: a relative `-f` path
+/// carries the repository prefix (the working directory relative
+/// to the top level). Absolute paths, `-` (stdin), and paths given
+/// outside a repository are left alone.
+fn prefix_config_file(ctx: &RepoContext, repo: Option<&git_core::Repository>, file: &str) -> String {
+    if file.is_empty() || file == "-" || file.starts_with('/') {
+        return file.to_string();
+    }
+    let Some(work_tree) = repo.and_then(|r| r.work_tree.clone()) else {
+        return file.to_string();
+    };
+    match ctx.cwd.strip_prefix(&work_tree) {
+        Ok(rel) if rel.as_os_str().is_empty() => file.to_string(),
+        Ok(rel) => format!("{}/{}", rel.to_string_lossy(), file),
+        Err(_) => file.to_string(),
+    }
+}
+
+/// Resolution base for a relative `-f` path: C stores the prefixed
+/// name, which resolves against the top level (the process cwd
+/// outside a repository).
+fn config_file_base(ctx: &RepoContext, repo: Option<&git_core::Repository>) -> PathBuf {
+    repo.and_then(|r| r.work_tree.clone()).unwrap_or_else(|| ctx.cwd.clone())
+}
+
+/// Split a write key into (section, subsection, key) with C's
+/// `git_config_parse_key` errors (exit 128 via `git_config_parse_key`
+/// die texts).
+fn parse_write_key(name: &str) -> Result<(String, Option<String>, String), CommandError> {
+    match parse_key_name(name) {
+        Ok(k) => Ok((k.section, k.subsection, k.key)),
+        // C: `ret = 0 - git_config_parse_key(...)` flips the
+        // negative return back to the positive exit code (1/2).
+        Err((code, msg)) => Err(CommandError {
+            message: format!("error: {msg}"),
+            code,
+        }),
+    }
+}
+
+/// Read the target file's current text (missing reads as empty).
+fn read_file_text(path: &Path, display: &str) -> Result<String, CommandError> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Ok(String::new());
+    };
+    // C runs `git_parse_source` over the file before splicing, so
+    // a malformed line is fatal rather than silently overwritten.
+    if let Some(line) = cfgfile::bad_line(&text) {
+        return Err(CommandError::fatal(format!(
+            "fatal: bad config line {line} in file {display}"
+        )));
+    }
+    Ok(text)
+}
+
+/// C's display name for the file a write touches: the `-f`
+/// argument as given (with the repository prefix), or the
+/// repository-relative config path.
+fn write_display_name(ctx: &RepoContext, repo: Option<&git_core::Repository>, loc: &LocOpts) -> String {
+    if let Some(file) = &loc.file {
+        return file.clone();
+    }
+    match write_target_file(ctx, repo, loc) {
+        Ok(p) => display_path(&p),
+        Err(_) => ".git/config".to_string(),
+    }
+}
+
+/// Spawn `$GIT_EDITOR`/`core.editor`/`$VISUAL`/`$EDITOR` on the
+/// config file (C `launch_editor`, shell mode). `":"` is the null
+/// editor. Returns C's error texts and exit codes.
+fn launch_editor_on(ctx: &RepoContext, repo: Option<&git_core::Repository>, path: &Path) -> Result<(), CommandError> {
+    // C `git_editor`: GIT_EDITOR, core.editor, VISUAL (not dumb),
+    // EDITOR, DEFAULT_EDITOR (not dumb), else NULL.
+    let dumb = std::env::var("TERM").map(|t| t == "dumb").unwrap_or(true)
+        || !std::io::IsTerminal::is_terminal(&std::io::stdin());
+    let core_editor = repo
+        .and_then(|r| r.config.get("core", "editor").map(|s| s.to_string()))
+        .or_else(|| {
+            ctx.repository()
+                .ok()
+                .and_then(|r| r.config.get("core", "editor").map(|s| s.to_string()))
+        });
+    let editor = std::env::var("GIT_EDITOR").ok()
+        .or(core_editor)
+        .or_else(|| if !dumb { std::env::var("VISUAL").ok() } else { None })
+        .or_else(|| std::env::var("EDITOR").ok());
+    let editor = match editor {
+        Some(e) if !e.is_empty() => e,
+        _ if dumb => {
+            return Err(CommandError::error("error: Terminal is dumb, but EDITOR unset"));
+        }
+        _ => "vi".to_string(),
+    };
+    if editor == ":" {
+        return Ok(());
+    }
+    // C runs the editor through the shell (`p.use_shell = 1`).
+    let realpath = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let realpath_s = realpath.display().to_string();
+    let quoted = if realpath_s
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'.' | b'-' | b'_'))
+    {
+        realpath_s.clone()
+    } else {
+        format!("'{}'", realpath_s.replace('\'', "'\\''"))
+    };
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("{editor} {quoted}"))
+        .status()
+        .map_err(|_| CommandError::error(format!("error: unable to start editor '{editor}'")))?;
+    if !status.success() {
+        return Err(CommandError::error(format!(
+            "error: there was a problem with the editor '{editor}'"
+        )));
+    }
+    Ok(())
+}
+
+/// C `default_user_config` template for a fresh `--global` edit.
+fn default_user_config() -> String {
+    let name = std::env::var("GIT_AUTHOR_NAME")
+        .ok()
+        .or_else(|| std::env::var("EMAIL").ok())
+        .unwrap_or_else(|| "unknown".to_string());
+    let email = std::env::var("GIT_AUTHOR_EMAIL")
+        .ok()
+        .or_else(|| std::env::var("EMAIL").ok())
+        .unwrap_or_else(|| "unknown".to_string());
+    format!(
+        "# This is Git's per-user configuration file.\n\
+         [user]\n\
+         # Please adapt and uncomment the following lines:\n\
+         #\tname = {name}\n\
+         #\temail = {email}\n"
+    )
+}
+
 pub struct Config;
+
+/// The seven subcommands (C `OPT_SUBCOMMAND` in `cmd_config`).
+const SUBCOMMANDS: &[&str] = &[
+    "list",
+    "get",
+    "set",
+    "unset",
+    "rename-section",
+    "remove-section",
+    "edit",
+];
+
+// C `ACTION_*` bitfield (builtin/config.c).
+const A_GET: u32 = 1 << 0;
+const A_GET_ALL: u32 = 1 << 1;
+const A_GET_REGEXP: u32 = 1 << 2;
+const A_REPLACE_ALL: u32 = 1 << 3;
+const A_ADD: u32 = 1 << 4;
+const A_UNSET: u32 = 1 << 5;
+const A_UNSET_ALL: u32 = 1 << 6;
+const A_RENAME_SECTION: u32 = 1 << 7;
+const A_REMOVE_SECTION: u32 = 1 << 8;
+const A_LIST: u32 = 1 << 9;
+const A_EDIT: u32 = 1 << 10;
+const A_SET: u32 = 1 << 11;
+const A_SET_ALL: u32 = 1 << 12;
+const A_GET_COLOR: u32 = 1 << 13;
+const A_GET_COLORBOOL: u32 = 1 << 14;
+const A_GET_URLMATCH: u32 = 1 << 15;
+
+/// Which option groups a parse mode accepts. C gives each
+/// subcommand its own option table (`cmd_config_get` has
+/// display options, `cmd_config_set` does not, ...).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OptMode {
+    /// `cmd_config_actions` (legacy spellings).
+    Legacy,
+    /// `cmd_config_get`.
+    Get,
+    /// `cmd_config_set`.
+    Set,
+    /// `cmd_config_unset`.
+    Unset,
+    /// `cmd_config_list`.
+    List,
+    /// `cmd_config_rename_section`/`remove_section`/`edit`.
+    LocationOnly,
+}
+
+impl OptMode {
+    /// Filter options `--all`/`--value` (get, set, unset).
+    fn allows_all(self) -> bool {
+        matches!(self, OptMode::Get | OptMode::Set | OptMode::Unset)
+    }
+    /// `--regexp` (get only).
+    fn allows_regexp(self) -> bool {
+        matches!(self, OptMode::Get)
+    }
+    /// `--value` (get, set, unset).
+    fn allows_value(self) -> bool {
+        matches!(self, OptMode::Get | OptMode::Set | OptMode::Unset)
+    }
+    /// `--url` (get only).
+    fn allows_url(self) -> bool {
+        matches!(self, OptMode::Get)
+    }
+    /// `--append` (set only).
+    fn allows_append(self) -> bool {
+        matches!(self, OptMode::Set)
+    }
+    /// Display options: `-z`, `--name-only`, `--show-*`, type flags.
+    fn allows_display(self) -> bool {
+        matches!(self, OptMode::Legacy | OptMode::Get | OptMode::List)
+    }
+    /// `--includes`.
+    fn allows_includes(self) -> bool {
+        matches!(self, OptMode::Legacy | OptMode::Get | OptMode::List)
+    }
+    /// `--default`.
+    fn allows_default(self) -> bool {
+        matches!(self, OptMode::Legacy | OptMode::Get)
+    }
+    /// `--fixed-value`.
+    fn allows_fixed_value(self) -> bool {
+        !matches!(self, OptMode::List | OptMode::LocationOnly)
+    }
+    /// `--comment`.
+    fn allows_comment(self) -> bool {
+        matches!(self, OptMode::Legacy | OptMode::Set)
+    }
+    /// Action flags (`--get`, `--add`, ...).
+    fn allows_actions(self) -> bool {
+        matches!(self, OptMode::Legacy)
+    }
+}
+
+/// Action-specific options. `--all`/`--regexp`/`--value`/
+/// `--url`/`--append` exist only in the subcommand handlers
+/// (C parses them with the subcommand's own option table);
+/// the legacy spellings set `actions` instead.
+#[derive(Default)]
+struct Parsed {
+    value_pattern: Option<String>,
+    comment: Option<String>,
+    url: Option<String>,
+    fixed: bool,
+    all: bool,
+    regexp: bool,
+    append: bool,
+    actions: u32,
+}
+
+/// Parse the shared option surface. `mode` rejects the options
+/// that C's per-subcommand option tables do not accept.
+fn parse_config_opts(
+    args: &[String],
+    usage: &'static str,
+    mode: OptMode,
+) -> Result<(LocOpts, DispOpts, Vec<String>, Parsed), CommandError> {
+    let mut parsed = Parsed::default();
+    let extra = |opt_loc: &mut LocOpts,
+                     opt_disp: &mut DispOpts,
+                     opt: &str,
+                     negated: bool,
+                     arg: Option<&str>,
+                     slot: &mut Option<PendingArg>|
+     -> Result<bool, CommandError> {
+        // C `OPT_CALLBACK_VALUE` is PARSE_OPT_NONEG: the no- form
+        // of the type flags is unknown.
+        let type_flag = |name: &str| check_cmd_flag(name, negated, arg, usage);
+        match opt {
+            "includes" if mode.allows_includes() => {
+                check_opt_value(opt, negated, true, arg)?;
+                opt_loc.includes = Some(!negated);
+                Ok(true)
+            }
+            "file" => {
+                check_opt_value(opt, negated, false, arg)?;
+                opt_loc.file = arg.map(|s| s.to_string());
+                Ok(true)
+            }
+            "blob" => {
+                check_opt_value(opt, negated, false, arg)?;
+                opt_loc.blob = arg.map(|s| s.to_string());
+                Ok(true)
+            }
+            "global" => {
+                check_opt_value(opt, negated, true, arg)?;
+                opt_loc.global = !negated;
+                Ok(true)
+            }
+            "system" => {
+                check_opt_value(opt, negated, true, arg)?;
+                opt_loc.system = !negated;
+                Ok(true)
+            }
+            "local" => {
+                check_opt_value(opt, negated, true, arg)?;
+                opt_loc.local = !negated;
+                Ok(true)
+            }
+            "worktree" => {
+                check_opt_value(opt, negated, true, arg)?;
+                opt_loc.worktree = !negated;
+                Ok(true)
+            }
+            "null" if mode.allows_display() => {
+                check_opt_value(opt, negated, true, arg)?;
+                opt_disp.end_nul = !negated;
+                Ok(true)
+            }
+            "name-only" if mode.allows_display() => {
+                check_opt_value(opt, negated, true, arg)?;
+                opt_disp.omit_values = !negated;
+                Ok(true)
+            }
+            "show-origin" if mode.allows_display() => {
+                check_opt_value(opt, negated, true, arg)?;
+                opt_disp.show_origin = !negated;
+                Ok(true)
+            }
+            "show-scope" if mode.allows_display() => {
+                check_opt_value(opt, negated, true, arg)?;
+                opt_disp.show_scope = !negated;
+                Ok(true)
+            }
+            "show-names" if mode.allows_display() => {
+                check_opt_value(opt, negated, true, arg)?;
+                opt_disp.show_keys = !negated;
+                Ok(true)
+            }
+            "type" if mode.allows_display() => {
+                check_opt_value(opt, negated, false, arg)?;
+                if negated {
+                    opt_disp.cli_type = None;
+                } else {
+                    let ty = parse_type_name(
+                        arg.ok_or_else(|| unknown_option(usage, "--type"))?,
+                    )
+                    .ok_or_else(|| unknown_option(usage, "--type"))?;
+                    set_cli_type(&mut opt_disp.cli_type, ty)?;
+                }
+                Ok(true)
+            }
+            "bool" if mode.allows_display() => {
+                type_flag(opt)?;
+                set_cli_type(&mut opt_disp.cli_type, CliType::Bool)?;
+                Ok(true)
+            }
+            "int" if mode.allows_display() => {
+                type_flag(opt)?;
+                set_cli_type(&mut opt_disp.cli_type, CliType::Int)?;
+                Ok(true)
+            }
+            "bool-or-int" if mode.allows_display() => {
+                type_flag(opt)?;
+                set_cli_type(&mut opt_disp.cli_type, CliType::BoolOrInt)?;
+                Ok(true)
+            }
+            "bool-or-str" if mode.allows_display() => {
+                type_flag(opt)?;
+                set_cli_type(&mut opt_disp.cli_type, CliType::BoolOrStr)?;
+                Ok(true)
+            }
+            "path" if mode.allows_display() => {
+                type_flag(opt)?;
+                set_cli_type(&mut opt_disp.cli_type, CliType::Path)?;
+                Ok(true)
+            }
+            "expiry-date" if mode.allows_display() => {
+                type_flag(opt)?;
+                set_cli_type(&mut opt_disp.cli_type, CliType::ExpiryDate)?;
+                Ok(true)
+            }
+            "default" if mode.allows_default() => {
+                check_opt_value(opt, negated, false, arg)?;
+                if negated {
+                    opt_disp.default_value = None;
+                } else {
+                    opt_disp.default_value = arg.map(|s| s.to_string());
+                }
+                Ok(true)
+            }
+            "fixed-value" if mode.allows_fixed_value() => {
+                check_opt_value(opt, negated, true, arg)?;
+                if !negated {
+                    parsed.fixed = true;
+                }
+                Ok(true)
+            }
+            "comment" if mode.allows_comment() => {
+                check_opt_value(opt, negated, false, arg)?;
+                if negated {
+                    parsed.comment = None;
+                } else if let Some(v) = arg {
+                    parsed.comment = Some(v.to_string());
+                } else {
+                    // `--comment <arg>`: defer to the pending
+                    // mechanism, which re-dispatches here.
+                    *slot = Some(PendingArg::long("comment"));
+                }
+                Ok(true)
+            }
+            // Filter options: subcommand handlers only.
+            "all" if mode.allows_all() => {
+                check_opt_value(opt, negated, true, arg)?;
+                if !negated {
+                    parsed.all = true;
+                }
+                Ok(true)
+            }
+            "regexp" if mode.allows_regexp() => {
+                check_opt_value(opt, negated, true, arg)?;
+                if !negated {
+                    parsed.regexp = true;
+                }
+                Ok(true)
+            }
+            "value" if mode.allows_value() => {
+                check_opt_value(opt, negated, false, arg)?;
+                if negated {
+                    parsed.value_pattern = None;
+                } else if let Some(v) = arg {
+                    parsed.value_pattern = Some(v.to_string());
+                } else {
+                    *slot = Some(PendingArg::long("value"));
+                }
+                Ok(true)
+            }
+            "url" if mode.allows_url() => {
+                check_opt_value(opt, negated, false, arg)?;
+                parsed.url = arg.map(|s| s.to_string());
+                Ok(true)
+            }
+            "append" if mode.allows_append() => {
+                check_opt_value(opt, negated, true, arg)?;
+                if !negated {
+                    parsed.append = true;
+                }
+                Ok(true)
+            }
+            // Action flags (C `OPT_CMDMODE` legacy spellings).
+            "get" if mode.allows_actions() => {
+                check_cmd_flag(opt, negated, arg, usage)?;
+                parsed.actions |= A_GET;
+                Ok(true)
+            }
+            "get-all" if mode.allows_actions() => {
+                check_cmd_flag(opt, negated, arg, usage)?;
+                parsed.actions |= A_GET_ALL;
+                Ok(true)
+            }
+            "get-regexp" if mode.allows_actions() => {
+                check_cmd_flag(opt, negated, arg, usage)?;
+                parsed.actions |= A_GET_REGEXP;
+                Ok(true)
+            }
+            "get-urlmatch" if mode.allows_actions() => {
+                check_cmd_flag(opt, negated, arg, usage)?;
+                parsed.actions |= A_GET_URLMATCH;
+                Ok(true)
+            }
+            "replace-all" if mode.allows_actions() => {
+                check_cmd_flag(opt, negated, arg, usage)?;
+                parsed.actions |= A_REPLACE_ALL;
+                Ok(true)
+            }
+            "add" if mode.allows_actions() => {
+                check_cmd_flag(opt, negated, arg, usage)?;
+                parsed.actions |= A_ADD;
+                Ok(true)
+            }
+            "unset" if mode.allows_actions() => {
+                check_cmd_flag(opt, negated, arg, usage)?;
+                parsed.actions |= A_UNSET;
+                Ok(true)
+            }
+            "unset-all" if mode.allows_actions() => {
+                check_cmd_flag(opt, negated, arg, usage)?;
+                parsed.actions |= A_UNSET_ALL;
+                Ok(true)
+            }
+            "rename-section" if mode.allows_actions() => {
+                check_cmd_flag(opt, negated, arg, usage)?;
+                parsed.actions |= A_RENAME_SECTION;
+                Ok(true)
+            }
+            "remove-section" if mode.allows_actions() => {
+                check_cmd_flag(opt, negated, arg, usage)?;
+                parsed.actions |= A_REMOVE_SECTION;
+                Ok(true)
+            }
+            "list" if mode.allows_actions() => {
+                check_cmd_flag(opt, negated, arg, usage)?;
+                parsed.actions |= A_LIST;
+                Ok(true)
+            }
+            "edit" if mode.allows_actions() => {
+                check_cmd_flag(opt, negated, arg, usage)?;
+                parsed.actions |= A_EDIT;
+                Ok(true)
+            }
+            "list-short" if mode.allows_actions() => {
+                check_cmd_flag(opt, negated, arg, usage)?;
+                parsed.actions |= A_LIST;
+                Ok(true)
+            }
+            "edit-short" if mode.allows_actions() => {
+                check_cmd_flag(opt, negated, arg, usage)?;
+                parsed.actions |= A_EDIT;
+                Ok(true)
+            }
+            "get-color" if mode.allows_actions() => {
+                check_cmd_flag(opt, negated, arg, usage)?;
+                parsed.actions |= A_GET_COLOR;
+                Ok(true)
+            }
+            "get-colorbool" if mode.allows_actions() => {
+                check_cmd_flag(opt, negated, arg, usage)?;
+                parsed.actions |= A_GET_COLORBOOL;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    };
+
+    let (loc, disp, rest) = parse_opts(args, usage, mode, true, true, extra)?;
+    Ok((loc, disp, rest, parsed))
+}
+
+/// Per-subcommand usage block (C passes each handler's own
+/// usage to `parse_options`).
+fn subcommand_usage(name: &str) -> &'static str {
+    match name {
+        "list" => LIST_USAGE,
+        "get" => GET_USAGE,
+        "set" => SET_USAGE,
+        "unset" => UNSET_USAGE,
+        "rename-section" => RENAME_SECTION_USAGE,
+        "remove-section" => REMOVE_SECTION_USAGE,
+        "edit" => EDIT_USAGE,
+        _ => LEGACY_USAGE,
+    }
+}
+
+/// C `die_missing_set_value`: the implicit `name=value`
+/// spelling (exit 129, with a hint when the prefix before
+/// `=` is a valid key).
+fn die_missing_set_value(arg: &str) -> CommandError {
+    let last_dot = arg.rfind('.');
+    let eq = last_dot.and_then(|d| arg[d + 1..].find('=').map(|e| d + 1 + e));
+    let prefix = eq.map(|e| &arg[..e]);
+    let valid = |key: &str| parse_key_name(key).is_ok();
+    if let Some(p) = prefix {
+        if valid(p) {
+            let value = &arg[eq.unwrap() + 1..];
+            return CommandError {
+                message: format!(
+                    "error: missing value to set to the variable '{arg}'\n\
+                     hint: did you mean \"git config set {p} {value}\"?"
+                ),
+                code: 129,
+            };
+        }
+    }
+    if valid(arg) {
+        CommandError {
+            message: format!("error: missing value to set to the variable '{arg}'"),
+            code: 129,
+        }
+    } else {
+        CommandError {
+            message: format!(
+                "error: missing value to set to a variable with an invalid name '{arg}'"
+            ),
+            code: 129,
+        }
+    }
+}
 
 impl Command for Config {
     fn name(&self) -> &'static str {
@@ -2102,291 +3097,959 @@ impl Command for Config {
         args: &[String],
         out: &mut dyn Write,
     ) -> Result<(), CommandError> {
-        enum Action {
-            List,
-            Get,
-            GetAll,
-            GetRegexp,
-            GetUrlmatch,
-            Set,
-            SetAll,
-            ReplaceAll,
-            Add,
-            Unset,
-            UnsetAll,
-            RenameSection,
-            RemoveSection,
-            Edit,
-            GetColor,
-            GetColorBool,
+        // C's first pass keeps every argument and scans for a
+        // subcommand token: the first non-option argument that
+        // names a subcommand selects the subcommand mode (its
+        // handler re-parses every other argument with its own
+        // table); any other first non-option ends the scan and
+        // selects the legacy flag mode.
+        let sub_idx = args
+            .iter()
+            .position(|a| !a.starts_with('-') && SUBCOMMANDS.contains(&a.as_str()));
+
+        if let Some(idx) = sub_idx {
+            let name = args[idx].as_str();
+            let mut stream = Vec::with_capacity(args.len().saturating_sub(1));
+            stream.extend_from_slice(&args[..idx]);
+            stream.extend_from_slice(&args[idx + 1..]);
+            let usage = subcommand_usage(name);
+            self.run_subcommand(ctx, name, &stream, usage, out)
+        } else {
+            self.run_legacy(ctx, args, out)
+        }
+    }
+}
+
+impl Config {
+    /// Subcommand mode (C `cmd_config_<name>` handlers).
+    fn run_subcommand(
+        &self,
+        ctx: &RepoContext,
+        name: &str,
+        args: &[String],
+        usage: &'static str,
+        out: &mut dyn Write,
+    ) -> Result<(), CommandError> {
+        let repo_opt = ctx.repository_opt()?;
+        let repo = repo_opt.as_ref();
+        let mode = match name {
+            "get" => OptMode::Get,
+            "set" => OptMode::Set,
+            "unset" => OptMode::Unset,
+            "list" => OptMode::List,
+            _ => OptMode::LocationOnly,
+        };
+        let (mut loc, disp, rest, parsed) = parse_config_opts(args, usage, mode)?;
+        if let Some(f) = &loc.file {
+            loc.file = Some(prefix_config_file(ctx, repo, f));
         }
 
-        let mut actions = 0;
-        let mut loc = LocOpts::default();
-        let mut disp = DispOpts::default();
-        let mut value_slot: Option<String> = None;
-        let mut comment_slot: Option<String> = None;
-        let mut flags = 0;
-        let mut append = false;
-        let mut value_pattern = None;
-        let mut url = None;
-
-        let mut extra = |opt_loc: &mut LocOpts,
-                         opt_disp: &mut DispOpts,
-                         opt: &str,
-                         negated: bool,
-                         arg: Option<&str>,
-                         _slot: &mut Option<String>| -> Result<bool, CommandError> {
-            match opt {
-                "includes" => {
-                    opt_loc.includes = Some(!negated);
-                    Ok(true)
-                }
-                "file" => {
-                    if negated {
-                        return Err(unknown_option(LEGACY_USAGE, opt));
-                    }
-                    opt_loc.file = arg.map(|s| s.to_string());
-                    Ok(true)
-                }
-                "blob" => {
-                    if negated {
-                        return Err(unknown_option(LEGACY_USAGE, opt));
-                    }
-                    opt_loc.blob = arg.map(|s| s.to_string());
-                    Ok(true)
-                }
-                "global" => {
-                    opt_loc.global = !negated;
-                    Ok(true)
-                }
-                "system" => {
-                    opt_loc.system = !negated;
-                    Ok(true)
-                }
-                "local" => {
-                    opt_loc.local = !negated;
-                    Ok(true)
-                }
-                "worktree" => {
-                    opt_loc.worktree = !negated;
-                    Ok(true)
-                }
-                "null" => {
-                    opt_disp.end_nul = !negated;
-                    Ok(true)
-                }
-                "name-only" => {
-                    opt_disp.omit_values = !negated;
-                    Ok(true)
-                }
-                "show-origin" => {
-                    opt_disp.show_origin = !negated;
-                    Ok(true)
-                }
-                "show-scope" => {
-                    opt_disp.show_scope = !negated;
-                    Ok(true)
-                }
-                "show-names" => {
-                    opt_disp.show_keys = !negated;
-                    Ok(true)
-                }
-                "type" => {
-                    if negated {
-                        opt_disp.cli_type = None;
-                    } else {
-                        let ty = parse_type_name(arg.ok_or_else(|| {
-                            unknown_option(LEGACY_USAGE, "--type")
-                        })?)
-                        .ok_or_else(|| {
-                            unknown_option(LEGACY_USAGE, "--type")
-                        })?;
-                        set_cli_type(&mut opt_disp.cli_type, ty)?;
-                    }
-                    Ok(true)
-                }
-                "bool" => {
-                    if negated {
-                        opt_disp.cli_type = None;
-                    } else {
-                        set_cli_type(&mut opt_disp.cli_type, CliType::Bool)?;
-                    }
-                    Ok(true)
-                }
-                "int" => {
-                    if negated {
-                        opt_disp.cli_type = None;
-                    } else {
-                        set_cli_type(&mut opt_disp.cli_type, CliType::Int)?;
-                    }
-                    Ok(true)
-                }
-                "bool-or-int" => {
-                    if negated {
-                        opt_disp.cli_type = None;
-                    } else {
-                        set_cli_type(&mut opt_disp.cli_type, CliType::BoolOrInt)?;
-                    }
-                    Ok(true)
-                }
-                "bool-or-str" => {
-                    if negated {
-                        opt_disp.cli_type = None;
-                    } else {
-                        set_cli_type(&mut opt_disp.cli_type, CliType::BoolOrStr)?;
-                    }
-                    Ok(true)
-                }
-                "path" => {
-                    if negated {
-                        opt_disp.cli_type = None;
-                    } else {
-                        set_cli_type(&mut opt_disp.cli_type, CliType::Path)?;
-                    }
-                    Ok(true)
-                }
-                "expiry-date" => {
-                    if negated {
-                        opt_disp.cli_type = None;
-                    } else {
-                        set_cli_type(&mut opt_disp.cli_type, CliType::ExpiryDate)?;
-                    }
-                    Ok(true)
-                }
-                "default" => {
-                    if negated {
-                        opt_disp.default_value = None;
-                    } else {
-                        opt_disp.default_value = arg.map(|s| s.to_string());
-                    }
-                    Ok(true)
-                }
-                "fixed-value" => {
-                    flags |= CONFIG_FLAGS_FIXED_VALUE;
-                    Ok(true)
-                }
-                "all" => {
-                    flags |= CONFIG_FLAGS_MULTI_REPLACE;
-                    Ok(true)
-                }
-                "value" => {
-                    value_slot = arg.map(|s| s.to_string());
-                    Ok(true)
-                }
-                "url" => {
-                    url = arg.map(|s| s.to_string());
-                    Ok(true)
-                }
-                "comment" => {
-                    comment_slot = arg.map(|s| s.to_string());
-                    Ok(true)
-                }
-                "append" => {
-                    append = true;
-                    Ok(true)
-                }
-                _ => Ok(false),
+        match name {
+            "list" => {
+                check_argc(rest.len(), 0, 0)?;
+                self.run_list(ctx, repo, &loc, &disp, out)
             }
+            "get" => {
+                check_argc(rest.len(), 1, 1)?;
+                if parsed.fixed && parsed.value_pattern.is_none() {
+                    return Err(CommandError::usage(
+                        "error: --fixed-value only applies with 'value-pattern'",
+                    ));
+                }
+                if disp.default_value.is_some() && (parsed.all || parsed.url.is_some()) {
+                    return Err(CommandError::usage(
+                        "error: --default= cannot be used with --all or --url=",
+                    ));
+                }
+                if parsed.url.is_some()
+                    && (parsed.all || parsed.regexp || parsed.value_pattern.is_some())
+                {
+                    return Err(CommandError::usage(
+                        "error: --url= cannot be used with --all, --regexp or --value",
+                    ));
+                }
+                if let Some(url) = parsed.url.as_deref() {
+                    return self.run_get_urlmatch(ctx, repo, &rest, &loc, &disp, url, out);
+                }
+                if disp.cli_type == Some(CliType::Color)
+                    && rest.first().map(|s| s.is_empty()).unwrap_or(false)
+                    && disp.default_value.is_some()
+                {
+                    return self.run_get_color(ctx, repo, &rest, &loc, &disp, out);
+                }
+                self.run_get(
+                    ctx,
+                    repo,
+                    &rest,
+                    &loc,
+                    &disp,
+                    parsed.value_pattern.as_deref(),
+                    parsed.all,
+                    parsed.regexp,
+                    parsed.fixed,
+                    out,
+                )
+            }
+            "set" => {
+                if rest.len() == 1 {
+                    return Err(die_missing_set_value(&rest[0]));
+                }
+                check_argc(rest.len(), 2, 2)?;
+                if parsed.fixed && parsed.value_pattern.is_none() {
+                    return Err(CommandError::usage(
+                        "error: --fixed-value only applies with --value=<pattern>",
+                    ));
+                }
+                if parsed.append && parsed.value_pattern.is_some() {
+                    return Err(CommandError::usage(
+                        "error: --append cannot be used with --value=<pattern>",
+                    ));
+                }
+                // C `--append` sets the pattern to
+                // `CONFIG_REGEX_NONE`, which never matches: the
+                // new pair is always appended.
+                let pattern = if parsed.append {
+                    Some(WritePattern::None_)
+                } else {
+                    parsed.value_pattern.as_deref().map(|p| WritePattern::Pat(p.to_string()))
+                };
+                let multi = parsed.all || pattern.is_some();
+                let comment = prepare_comment_opt(parsed.comment.as_deref())?;
+                self.run_set(
+                    ctx,
+                    repo,
+                    &rest,
+                    &loc,
+                    &disp,
+                    pattern,
+                    multi,
+                    parsed.fixed,
+                    comment.as_deref(),
+                    false,
+                    out,
+                )
+            }
+            "unset" => {
+                check_argc(rest.len(), 1, 1)?;
+                if parsed.fixed && parsed.value_pattern.is_none() {
+                    return Err(CommandError::usage(
+                        "error: --fixed-value only applies with 'value-pattern'",
+                    ));
+                }
+                let pattern = parsed.value_pattern.as_deref().map(|p| WritePattern::Pat(p.to_string()));
+                let multi = parsed.all || pattern.is_some();
+                self.run_unset(ctx, repo, &rest, &loc, pattern, multi, parsed.fixed, out)
+            }
+            "rename-section" => {
+                check_argc(rest.len(), 2, 2)?;
+                self.run_rename_section(ctx, repo, &rest, &loc, false, out)
+            }
+            "remove-section" => {
+                check_argc(rest.len(), 1, 1)?;
+                self.run_remove_section(ctx, repo, &rest, &loc, out)
+            }
+            "edit" => {
+                check_argc(rest.len(), 0, 0)?;
+                self.run_edit(ctx, repo, &loc, out)
+            }
+            _ => Err(CommandError::usage("error: no action specified")),
+        }
+    }
+
+    /// Legacy flag mode (C `cmd_config_actions`).
+    fn run_legacy(
+        &self,
+        ctx: &RepoContext,
+        args: &[String],
+        out: &mut dyn Write,
+    ) -> Result<(), CommandError> {
+        let repo_opt = ctx.repository_opt()?;
+        let repo = repo_opt.as_ref();
+        let (mut loc, disp, rest, parsed) = parse_config_opts(args, LEGACY_USAGE, OptMode::Legacy)?;
+        if let Some(f) = &loc.file {
+            loc.file = Some(prefix_config_file(ctx, repo, f));
+        }
+
+        // C `cmd_config_actions` validations (exit 129).
+        if (parsed.actions & (A_GET_COLOR | A_GET_COLORBOOL)) != 0 && disp.cli_type.is_some() {
+            return Err(CommandError::usage(
+                "error: --get-color and variable type are incoherent",
+            ));
+        }
+
+        let actions_implicit = parsed.actions == 0;
+        let actions = if actions_implicit {
+            match rest.len() {
+                1 => A_GET,
+                2 => A_SET,
+                3 => A_SET_ALL,
+                _ => return Err(CommandError::usage("error: no action specified")),
+            }
+        } else {
+            parsed.actions
         };
 
-        let (loc, disp, rest) = parse_opts(
-            args,
-            LEGACY_USAGE,
-            true,
-            true,
-            &mut value_slot,
-            &mut comment_slot,
-            extra,
-        )?;
-
-        let actions_implicit = actions == 0;
-        if actions_implicit {
-            match rest.len() {
-                1 => actions = Action::Get as u32,
-                2 => actions = Action::Set as u32,
-                3 => actions = Action::SetAll as u32,
-                _ => return Err(CommandError::usage("no action specified")),
+        if actions_implicit && rest.len() == 1 {
+            // The implicit `name=value` spelling.
+            if let Some(dot) = rest[0].rfind('.') {
+                if rest[0][dot + 1..].contains('=') {
+                    return Err(die_missing_set_value(&rest[0]));
+                }
+            }
+        }
+        if disp.omit_values && actions != A_LIST && actions != A_GET_REGEXP {
+            return Err(CommandError::usage(
+                "error: --name-only is only applicable to --list or --get-regexp",
+            ));
+        }
+        if disp.show_origin
+            && actions != A_GET
+            && actions != A_GET_ALL
+            && actions != A_GET_REGEXP
+            && actions != A_LIST
+        {
+            return Err(CommandError::usage(
+                "error: --show-origin is only applicable to --get, --get-all, --get-regexp, and --list",
+            ));
+        }
+        if disp.default_value.is_some() && actions != A_GET {
+            return Err(CommandError::usage("error: --default is only applicable to --get"));
+        }
+        if parsed.comment.is_some()
+            && actions != A_ADD
+            && actions != A_SET
+            && actions != A_SET_ALL
+            && actions != A_REPLACE_ALL
+        {
+            return Err(CommandError::usage(
+                "error: --comment is only applicable to add/set/replace operations",
+            ));
+        }
+        // C checks `--fixed-value` against the positional
+        // argument counts (the value pattern is positional in
+        // the legacy spellings).
+        if parsed.fixed {
+            let allowed = match actions {
+                A_GET | A_GET_ALL | A_GET_REGEXP | A_UNSET | A_UNSET_ALL => rest.len() > 1,
+                A_SET_ALL | A_REPLACE_ALL => rest.len() > 2,
+                _ => false,
+            };
+            if !allowed {
+                return Err(CommandError::usage(
+                    "error: --fixed-value only applies with 'value-pattern'",
+                ));
             }
         }
 
-        // Map remaining args to actions
-        if !rest.is_empty() {
-            match rest[0].as_str() {
-                "list" => actions = Action::List as u32,
-                "get" => actions = Action::Get as u32,
-                "get-all" => actions = Action::GetAll as u32,
-                "get-regexp" => actions = Action::GetRegexp as u32,
-                "get-urlmatch" => actions = Action::GetUrlmatch as u32,
-                "set" => actions = Action::Set as u32,
-                "set-all" => actions = Action::SetAll as u32,
-                "replace-all" => actions = Action::ReplaceAll as u32,
-                "add" => actions = Action::Add as u32,
-                "unset" => actions = Action::Unset as u32,
-                "unset-all" => actions = Action::UnsetAll as u32,
-                "rename-section" => actions = Action::RenameSection as u32,
-                "remove-section" => actions = Action::RemoveSection as u32,
-                "edit" => actions = Action::Edit as u32,
-                "get-color" => actions = Action::GetColor as u32,
-                "get-colorbool" => actions = Action::GetColorBool as u32,
-                _ => return Err(CommandError::usage(format!(
-                    "unknown subcommand '{}'",
-                    rest[0]
-                ))),
-            }
-        }
+        let comment = prepare_comment_opt(parsed.comment.as_deref())?;
+        let fixed = parsed.fixed;
 
-        // Dispatch to appropriate handler
         match actions {
-            x if x == (Action::List as u32) => {
-                self.run_list(ctx, &rest[1..], out)
+            A_LIST => {
+                check_argc(rest.len(), 0, 0)?;
+                // C `display_options_init_list`: keys are
+                // always shown.
+                let mut disp = disp.clone_disp();
+                disp.show_keys = true;
+                self.run_list(ctx, repo, &loc, &disp, out)
             }
-            x if x == (Action::Get as u32) => {
-                self.run_get(ctx, &rest[1..], out, &loc, &disp, value_slot.as_deref())
+            A_EDIT => self.run_edit(ctx, repo, &loc, out),
+            A_SET => {
+                check_write(&loc, repo)?;
+                check_argc(rest.len(), 2, 2)?;
+                self.run_set(
+                    ctx,
+                    repo,
+                    &rest,
+                    &loc,
+                    &disp,
+                    None,
+                    false,
+                    fixed,
+                    comment.as_deref(),
+                    true,
+                    out,
+                )
             }
-            x if x == (Action::GetAll as u32) => {
-                self.run_get_all(ctx, &rest[1..], out, &loc, &disp, value_slot.as_deref())
+            A_SET_ALL => {
+                check_write(&loc, repo)?;
+                check_argc(rest.len(), 2, 3)?;
+                let pattern = rest.get(2).map(|p| WritePattern::Pat(p.clone()));
+                self.run_set_all(
+                    ctx,
+                    repo,
+                    &rest,
+                    &loc,
+                    &disp,
+                    pattern,
+                    false,
+                    fixed,
+                    comment.as_deref(),
+                    out,
+                )
             }
-            x if x == (Action::GetRegexp as u32) => {
-                self.run_get_regexp(ctx, &rest[1..], out, &loc, &disp, value_slot.as_deref())
+            A_ADD => {
+                check_write(&loc, repo)?;
+                check_argc(rest.len(), 2, 2)?;
+                self.run_add(ctx, repo, &rest, &loc, &disp, comment.as_deref(), out)
             }
-            x if x == (Action::GetUrlmatch as u32) => {
-                self.run_get_urlmatch(ctx, &rest[1..], out, &loc, &disp, url.as_deref())
+            A_REPLACE_ALL => {
+                check_write(&loc, repo)?;
+                check_argc(rest.len(), 2, 3)?;
+                let pattern = rest.get(2).map(|p| WritePattern::Pat(p.clone()));
+                self.run_replace_all(
+                    ctx,
+                    repo,
+                    &rest,
+                    &loc,
+                    &disp,
+                    pattern,
+                    fixed,
+                    comment.as_deref(),
+                    out,
+                )
             }
-            x if x == (Action::Set as u32) => {
-                self.run_set(ctx, &rest[1..], out, &loc, value_slot.as_deref(), comment_slot.as_deref())
+            A_GET => {
+                check_argc(rest.len(), 1, 2)?;
+                let pattern = rest.get(1).map(|s| s.as_str());
+                self.run_get(ctx, repo, &rest, &loc, &disp, pattern, false, false, fixed, out)
             }
-            x if x == (Action::SetAll as u32) => {
-                self.run_set_all(ctx, &rest[1..], out, &loc, value_slot.as_deref(), comment_slot.as_deref())
+            A_GET_ALL => {
+                check_argc(rest.len(), 1, 2)?;
+                let pattern = rest.get(1).map(|s| s.as_str());
+                self.run_get(ctx, repo, &rest, &loc, &disp, pattern, true, false, fixed, out)
             }
-            x if x == (Action::ReplaceAll as u32) => {
-                self.run_replace_all(ctx, &rest[1..], out, &loc, value_slot.as_deref(), comment_slot.as_deref(), flags)
+            A_GET_REGEXP => {
+                // C forces `--show-names` for the legacy
+                // `--get-regexp` spelling.
+                let mut disp = disp.clone_disp();
+                disp.show_keys = true;
+                check_argc(rest.len(), 1, 2)?;
+                let pattern = rest.get(1).map(|s| s.as_str());
+                self.run_get(ctx, repo, &rest, &loc, &disp, pattern, true, true, fixed, out)
             }
-            x if x == (Action::Add as u32) => {
-                self.run_add(ctx, &rest[1..], out, &loc, value_slot.as_deref(), comment_slot.as_deref())
+            A_GET_URLMATCH => {
+                check_argc(rest.len(), 2, 2)?;
+                let url = rest[1].clone();
+                self.run_get_urlmatch(ctx, repo, &rest, &loc, &disp, &url, out)
             }
-            x if x == (Action::Unset as u32) => {
-                self.run_unset(ctx, &rest[1..], out, &loc, value_slot.as_deref(), flags)
+            A_UNSET => {
+                check_write(&loc, repo)?;
+                check_argc(rest.len(), 1, 2)?;
+                // C: a positional pattern routes to the
+                // multivar path (without MULTI_REPLACE);
+                // without one the single-set API removes the
+                // key outright.
+                let pattern = rest.get(1).map(|p| WritePattern::Pat(p.clone()));
+                let multi = pattern.is_some();
+                self.run_unset(ctx, repo, &rest, &loc, pattern, multi, fixed, out)
             }
-            x if x == (Action::UnsetAll as u32) => {
-                self.run_unset_all(ctx, &rest[1..], out, &loc, value_slot.as_deref(), flags)
+            A_UNSET_ALL => {
+                check_write(&loc, repo)?;
+                check_argc(rest.len(), 1, 2)?;
+                let pattern = rest.get(1).map(|p| WritePattern::Pat(p.clone()));
+                self.run_unset(ctx, repo, &rest, &loc, pattern, true, fixed, out)
             }
-            x if x == (Action::RenameSection as u32) => {
-                self.run_rename_section(ctx, &rest[1..], out, &loc)
+            A_RENAME_SECTION => {
+                check_write(&loc, repo)?;
+                check_argc(rest.len(), 2, 2)?;
+                self.run_rename_section(ctx, repo, &rest, &loc, false, out)
             }
-            x if x == (Action::RemoveSection as u32) => {
-                self.run_remove_section(ctx, &rest[1..], out, &loc)
+            A_REMOVE_SECTION => {
+                check_write(&loc, repo)?;
+                check_argc(rest.len(), 1, 1)?;
+                self.run_remove_section(ctx, repo, &rest, &loc, out)
             }
-            x if x == (Action::Edit as u32) => {
-                self.run_edit(ctx, &rest[1..], out, &loc)
+            A_GET_COLOR => {
+                check_argc(rest.len(), 1, 2)?;
+                self.run_get_color(ctx, repo, &rest, &loc, &disp, out)
             }
-            x if x == (Action::GetColor as u32) => {
-                self.run_get_color(ctx, &rest[1..], out, &loc, &disp)
+            A_GET_COLORBOOL => {
+                check_argc(rest.len(), 1, 2)?;
+                self.run_get_colorbool(ctx, repo, &rest, &loc, &disp, out)
             }
-            x if x == (Action::GetColorBool as u32) => {
-                self.run_get_colorbool(ctx, &rest[1..], out, &loc, &disp)
+            _ => Err(CommandError::usage("error: no action specified")),
+        }
+    }
+}
+impl Config {
+    /// `git config list` (C `ACTION_LIST` over `show_all_config`).
+    fn run_list(
+        &self,
+        ctx: &RepoContext,
+        repo: Option<&git_core::Repository>,
+        loc: &LocOpts,
+        disp: &DispOpts,
+        out: &mut dyn Write,
+    ) -> Result<(), CommandError> {
+        // C `display_options_init_list`: list always shows keys,
+        // and `-z` joins key and value with '\n' (terminated by
+        // NUL), not a NUL separator.
+        let mut disp = disp.clone_disp();
+        disp.show_keys = true;
+        let src = load_read_source(ctx, repo, loc)?;
+        if let Some(file) = src.missing_file {
+            // C: `die_errno("unable to read config file '%s'")`.
+            return Err(CommandError::fatal(format!(
+                "fatal: unable to read config file '{file}': No such file or directory"
+            )));
+        }
+        let key_delim = if disp.end_nul { '\n' } else { '=' };
+        for e in &src.entries {
+            let name = dotted_name(&e.entry);
+            let formatted = match format_typed(disp.cli_type, &name, eff_value(e), &TypeLoc::of(e)) {
+                Ok(v) => v,
+                Err(te) => return Err(emit_type_error(te)),
+            };
+            if let Some(line) = render_entry(&disp, e, formatted, key_delim) {
+                write_line(out, &line)?;
             }
-            _ => Err(CommandError::usage("no action specified")),
+        }
+        Ok(())
+    }
+
+    /// `git config get` family (C `get_value`).
+    fn run_get(
+        &self,
+        ctx: &RepoContext,
+        repo: Option<&git_core::Repository>,
+        args: &[String],
+        loc: &LocOpts,
+        disp: &DispOpts,
+        value_pattern: Option<&str>,
+        all: bool,
+        regexp: bool,
+        fixed: bool,
+        out: &mut dyn Write,
+    ) -> Result<(), CommandError> {
+        let Some(key) = args.first() else {
+            return Err(CommandError::usage("error: wrong number of arguments, should be 1"));
+        };
+        let src = load_read_source(ctx, repo, loc)?;
+        if src.missing_file.is_some() {
+            return Err(CommandError::silent(1));
+        }
+        let req = GetReq {
+            key: key.clone(),
+            regexp,
+            all,
+            value_pattern: value_pattern.map(|s| s.to_string()),
+            fixed_value: fixed,
+        };
+        let key_delim = if disp.end_nul { '\0' } else { ' ' };
+        run_get(&src.entries, disp, &req, key_delim, out)
+    }
+
+    /// `git config get-urlmatch` (C `get_urlmatch`).
+    fn run_get_urlmatch(
+        &self,
+        ctx: &RepoContext,
+        repo: Option<&git_core::Repository>,
+        args: &[String],
+        loc: &LocOpts,
+        disp: &DispOpts,
+        url: &str,
+        out: &mut dyn Write,
+    ) -> Result<(), CommandError> {
+        let Some(var) = args.first() else {
+            return Err(CommandError::usage("error: wrong number of arguments, should be 2"));
+        };
+        let target = url_normalize(url, false).map_err(|e| CommandError::fatal(format!("fatal: {e}")))?;
+        // C lowercases the whole var, then splits at the first dot.
+        let lowered = var.to_lowercase();
+        let (section, key) = match lowered.split_once('.') {
+            Some((sec, rest)) => (sec.to_string(), Some(rest.to_string())),
+            None => (lowered, None),
+        };
+        // C forces show_keys when the key is absent (the caller
+        // asks for whole sections).
+        let show_keys = key.is_none();
+        let mut disp = disp.clone_disp();
+        disp.show_keys = show_keys;
+
+        let src = load_read_source(ctx, repo, loc)?;
+        if src.missing_file.is_some() {
+            return Err(CommandError::silent(1));
+        }
+        // C `urlmatch_config_entry`: var must start `section.`, the
+        // part before the last dot is a URL pattern (globs allowed),
+        // and the trailing key must match. Best match per key wins
+        // (C `string_list` keyed by the trailing key).
+        let mut matched: Vec<(String, LoadedEntry, (usize, usize, bool))> = Vec::new();
+        for e in &src.entries {
+            let dotted = dotted_name(&e.entry);
+            let Some(rest) = dotted.strip_prefix(&section) else {
+                continue;
+            };
+            let Some(rest) = rest.strip_prefix('.') else {
+                continue;
+            };
+            let (config_url, entry_key) = match rest.rsplit_once('.') {
+                Some((u, k)) => (u, k),
+                None => (rest, rest),
+            };
+            let config_url = config_url.to_string();
+            let entry_key = entry_key.to_string();
+            if let Some(key) = &key {
+                if *key != entry_key {
+                    continue;
+                }
+            }
+            let Ok(norm) = url_normalize(&config_url, true) else {
+                continue;
+            };
+            let Some(m) = match_urls(&target, &norm) else {
+                continue;
+            };
+            // C `cmp_matches`: longer host, then longer path, then
+            // user-matched wins. C replaces on ties (`select_fn >= 0`),
+            // so a later (higher-priority) entry wins an equal rank.
+            let rank = (m.hostmatch_len, m.pathmatch_len, m.user_matched);
+            if let Some(pos) = matched.iter().position(|(k, _, _)| *k == entry_key) {
+                if rank >= matched[pos].2 {
+                    matched[pos] = (entry_key, e.clone(), rank);
+                }
+            } else {
+                matched.push((entry_key, e.clone(), rank));
+            }
+        }
+        matched.sort_by(|a, b| a.0.cmp(&b.0));
+        let key_delim = if disp.end_nul { '\0' } else { ' ' };
+        for (_, e, _) in &matched {
+            let name = dotted_name(&e.entry);
+            let formatted = match format_typed(disp.cli_type, &name, eff_value(e), &TypeLoc::of(e)) {
+                Ok(v) => v,
+                Err(te) => return Err(emit_type_error(te)),
+            };
+            if let Some(line) = render_entry(&disp, e, formatted, key_delim) {
+                write_line(out, &line)?;
+            }
+        }
+        if matched.is_empty() {
+            return Err(CommandError::silent(1));
+        }
+        Ok(())
+    }
+
+    /// `git config set` (C `ACTION_SET`).
+    fn run_set(
+        &self,
+        ctx: &RepoContext,
+        repo: Option<&git_core::Repository>,
+        args: &[String],
+        loc: &LocOpts,
+        disp: &DispOpts,
+        pattern: Option<WritePattern>,
+        multi: bool,
+        fixed: bool,
+        comment: Option<&str>,
+        legacy: bool,
+        out: &mut dyn Write,
+    ) -> Result<(), CommandError> {
+        let _ = out;
+        let (name, value) = (args[0].clone(), args[1].clone());
+        let (section, subsection, key) = parse_write_key(&name)?;
+        let value = normalize_value(&name, &value, disp.cli_type)?;
+        let comment = comment.map(prepare_comment).transpose()?;
+        let path = write_target_file(ctx, repo, loc)?;
+        let dotted = match &subsection {
+            Some(sub) => format!("{section}.{sub}.{key}"),
+            None => format!("{section}.{key}"),
+        };
+        match pattern {
+            // C `repo_config_set_in_file_gently`: append when
+            // absent, replace when unique, refuse on several
+            // matches (warning first, then the per-mode hint).
+            Some(WritePattern::None_) | None => {
+                let display = write_display_name(ctx, repo, loc);
+                let text = read_file_text(&path, &display)?;
+                let new_text = match cfgfile::set_value(
+                    &text,
+                    &section,
+                    subsection.as_deref(),
+                    &key,
+                    &value,
+                    comment.as_deref(),
+                ) {
+                    Ok(t) => t,
+                    Err(_) => {
+                        eprintln!("warning: {dotted} has multiple values");
+                        let hint = if legacy {
+                            "Use a regexp, --add or --replace-all to change"
+                        } else {
+                            "Use --value=<pattern>, --append or --all to change"
+                        };
+                        return Err(CommandError {
+                            message: format!(
+                                "error: cannot overwrite multiple values with a single value\n       {hint} {name}."
+                            ),
+                            code: 5,
+                        });
+                    }
+                };
+                cfgfile::write_config_file(&path, &new_text).map_err(|_| {
+                    CommandError::error(format!(
+                        "error: could not write config file {}",
+                        path.display()
+                    ))
+                })
+            }
+            Some(pat) => config_multivar_write(
+                &path,
+                &section,
+                subsection.as_deref(),
+                &key,
+                Some(&value),
+                &pat,
+                fixed,
+                multi,
+                comment.as_deref(),
+            ),
+        }
+    }
+
+    /// `git config set-all` (C `ACTION_SET_ALL`).
+    fn run_set_all(
+        &self,
+        ctx: &RepoContext,
+        repo: Option<&git_core::Repository>,
+        args: &[String],
+        loc: &LocOpts,
+        disp: &DispOpts,
+        pattern: Option<WritePattern>,
+        multi: bool,
+        fixed: bool,
+        comment: Option<&str>,
+        out: &mut dyn Write,
+    ) -> Result<(), CommandError> {
+        let _ = out;
+        let (name, value) = (args[0].clone(), args[1].clone());
+        let (section, subsection, key) = parse_write_key(&name)?;
+        let value = normalize_value(&name, &value, disp.cli_type)?;
+        let comment = comment.map(prepare_comment).transpose()?;
+        let path = write_target_file(ctx, repo, loc)?;
+        let pattern = pattern.unwrap_or(WritePattern::All);
+        config_multivar_write(
+            &path,
+            &section,
+            subsection.as_deref(),
+            &key,
+            Some(&value),
+            &pattern,
+            fixed,
+            multi,
+            comment.as_deref(),
+        )
+    }
+
+    /// `git config replace-all` (C `ACTION_REPLACE_ALL`).
+    fn run_replace_all(
+        &self,
+        ctx: &RepoContext,
+        repo: Option<&git_core::Repository>,
+        args: &[String],
+        loc: &LocOpts,
+        disp: &DispOpts,
+        pattern: Option<WritePattern>,
+        fixed: bool,
+        comment: Option<&str>,
+        out: &mut dyn Write,
+    ) -> Result<(), CommandError> {
+        let _ = out;
+        let (name, value) = (args[0].clone(), args[1].clone());
+        let (section, subsection, key) = parse_write_key(&name)?;
+        let value = normalize_value(&name, &value, disp.cli_type)?;
+        let comment = comment.map(prepare_comment).transpose()?;
+        let path = write_target_file(ctx, repo, loc)?;
+        let pattern = pattern.unwrap_or(WritePattern::All);
+        config_multivar_write(
+            &path,
+            &section,
+            subsection.as_deref(),
+            &key,
+            Some(&value),
+            &pattern,
+            fixed,
+            true,
+            comment.as_deref(),
+        )
+    }
+
+    /// `git config add` (C `ACTION_ADD`: `CONFIG_REGEX_NONE`).
+    fn run_add(
+        &self,
+        ctx: &RepoContext,
+        repo: Option<&git_core::Repository>,
+        args: &[String],
+        loc: &LocOpts,
+        disp: &DispOpts,
+        comment: Option<&str>,
+        out: &mut dyn Write,
+    ) -> Result<(), CommandError> {
+        let _ = out;
+        let (name, value) = (args[0].clone(), args[1].clone());
+        let (section, subsection, key) = parse_write_key(&name)?;
+        let value = normalize_value(&name, &value, disp.cli_type)?;
+        let comment = comment.map(prepare_comment).transpose()?;
+        let path = write_target_file(ctx, repo, loc)?;
+        config_write_add(&path, &section, subsection.as_deref(), &key, Some(&value), comment.as_deref())
+    }
+
+    /// `git config unset` / `unset-all` (C `ACTION_UNSET[_ALL]`).
+    fn run_unset(
+        &self,
+        ctx: &RepoContext,
+        repo: Option<&git_core::Repository>,
+        args: &[String],
+        loc: &LocOpts,
+        pattern: Option<WritePattern>,
+        multi: bool,
+        fixed: bool,
+        out: &mut dyn Write,
+    ) -> Result<(), CommandError> {
+        let _ = out;
+        let name = args[0].clone();
+        let (section, subsection, key) = parse_write_key(&name)?;
+        let path = write_target_file(ctx, repo, loc)?;
+        let pattern = pattern.unwrap_or(WritePattern::All);
+        config_multivar_write(
+            &path,
+            &section,
+            subsection.as_deref(),
+            &key,
+            None,
+            &pattern,
+            fixed,
+            multi,
+            None,
+        )
+    }
+
+    /// `git config rename-section` (C `ACTION_RENAME_SECTION`).
+    fn run_rename_section(
+        &self,
+        ctx: &RepoContext,
+        repo: Option<&git_core::Repository>,
+        args: &[String],
+        loc: &LocOpts,
+        remove: bool,
+        out: &mut dyn Write,
+    ) -> Result<(), CommandError> {
+        let _ = out;
+        let old = args[0].clone();
+        let new = if remove { None } else { Some(args[1].clone()) };
+        if let Some(n) = &new {
+            if !section_name_is_ok(n) {
+                eprintln!("error: invalid section name: {n}");
+                return Err(CommandError::silent(255));
+            }
+        }
+        let path = write_target_file(ctx, repo, loc)?;
+        let display = write_display_name(ctx, repo, loc);
+        let text = read_file_text(&path, &display)?;
+        let (new_text, count) = if remove {
+            cfgfile::remove_section(&text, &old)
+        } else {
+            cfgfile::rename_section(&text, &old, new.as_deref().unwrap_or(""))
+        };
+        if count == 0 {
+            return Err(CommandError::fatal(format!("fatal: no such section: {old}")));
+        }
+        cfgfile::write_config_file(&path, &new_text).map_err(|_| {
+            CommandError::error(format!("error: could not write config file {}", path.display()))
+        })
+    }
+
+    /// `git config remove-section` (C `ACTION_REMOVE_SECTION`).
+    fn run_remove_section(
+        &self,
+        ctx: &RepoContext,
+        repo: Option<&git_core::Repository>,
+        args: &[String],
+        loc: &LocOpts,
+        out: &mut dyn Write,
+    ) -> Result<(), CommandError> {
+        self.run_rename_section(ctx, repo, args, loc, true, out)
+    }
+
+    /// `git config edit` (C `ACTION_EDIT` over `show_editor`).
+    fn run_edit(
+        &self,
+        ctx: &RepoContext,
+        repo: Option<&git_core::Repository>,
+        loc: &LocOpts,
+        out: &mut dyn Write,
+    ) -> Result<(), CommandError> {
+        let _ = out;
+        if loc.file.as_deref() == Some("-") {
+            return Err(CommandError::fatal("fatal: editing stdin is not supported"));
+        }
+        if loc.blob.is_some() {
+            return Err(CommandError::fatal("fatal: editing blobs is not supported"));
+        }
+        if repo.is_none() && loc.file.is_none() && !loc.global && !loc.system {
+            return Err(CommandError::fatal("fatal: not in a git directory"));
+        }
+        let path = write_target_file(ctx, repo, loc)?;
+        // C `show_editor`: `--global` creates the file with the
+        // default template when missing.
+        if loc.global && !path.exists() {
+            let template = default_user_config();
+            cfgfile::write_config_file(&path, &template).map_err(|_| {
+                CommandError::fatal(format!(
+                    "fatal: cannot create configuration file {}",
+                    path.display()
+                ))
+            })?;
+        }
+        launch_editor_on(ctx, repo, &path)
+    }
+
+    /// `git config get-color` (C `get_color`).
+    fn run_get_color(
+        &self,
+        ctx: &RepoContext,
+        repo: Option<&git_core::Repository>,
+        args: &[String],
+        loc: &LocOpts,
+        _disp: &DispOpts,
+        out: &mut dyn Write,
+    ) -> Result<(), CommandError> {
+        let slot = args.first().cloned().unwrap_or_default();
+        let def_color = args.get(1).cloned();
+        let src = load_read_source(ctx, repo, loc)?;
+        let mut found = false;
+        let mut parsed = String::new();
+        for e in &src.entries {
+            if dotted_name(&e.entry) != slot {
+                continue;
+            }
+            let Some(v) = eff_value(e) else {
+                // C `config_error_nonbool`: error, then the (empty)
+                // color is still printed with exit 0.
+                eprintln!("error: missing value for '{slot}'");
+                break;
+            };
+            if let Some(color) = color_parse_value(v) {
+                parsed = color;
+                found = true;
+            } else {
+                eprintln!("error: invalid color value: {v}");
+            }
+            break;
+        }
+        if !found {
+            if let Some(def) = def_color {
+                if color_parse_value(&def).is_none() {
+                    eprintln!("error: unable to parse default color value");
+                    return Err(CommandError::silent(1));
+                }
+                if let Some(color) = color_parse_value(&def) {
+                    parsed = color;
+                }
+            }
+        }
+        write_line(out, &parsed)
+    }
+
+    /// `git config get-colorbool` (C `get_colorbool`).
+    fn run_get_colorbool(
+        &self,
+        ctx: &RepoContext,
+        repo: Option<&git_core::Repository>,
+        args: &[String],
+        loc: &LocOpts,
+        _disp: &DispOpts,
+        out: &mut dyn Write,
+    ) -> Result<(), CommandError> {
+        let slot = args.first().cloned().unwrap_or_default();
+        // Optional `<stdout-is-tty>` argument.
+        let print = args.len() > 1;
+        let mut tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
+        if print {
+            tty = parse_bool(&args[1]).unwrap_or(false);
+        }
+        let src = load_read_source(ctx, repo, loc)?;
+        // C `git_get_colorbool_config`: slot, then `diff.color`,
+        // then `color.ui` fallbacks; `git_config_colorbool` mapping.
+        let mut slot_found: Option<u8> = None; // NEVER=0, AUTO=1, ALWAYS=2
+        let mut diff_found: Option<u8> = None;
+        let mut ui_found: Option<u8> = None;
+        for e in &src.entries {
+            let name = dotted_name(&e.entry);
+            let cb = colorbool_value(eff_value(e));
+            if name == slot {
+                if slot_found.is_none() {
+                    slot_found = Some(cb);
+                }
+            } else if name == "diff.color" {
+                if diff_found.is_none() {
+                    diff_found = Some(cb);
+                }
+            } else if name == "color.ui" {
+                if ui_found.is_none() {
+                    ui_found = Some(cb);
+                }
+            }
+        }
+        let mut found = slot_found;
+        if found.is_none() && slot == "color.diff" {
+            found = diff_found;
+        }
+        if found.is_none() {
+            found = ui_found;
+        }
+        // C: unknown defaults to AUTO; want_color maps AUTO to the
+        // tty state, ALWAYS/NEVER to themselves.
+        let result = match found {
+            Some(2) => true,
+            Some(0) => false,
+            _ => tty,
+        };
+        if print {
+            write_line(out, if result { "true" } else { "false" })?;
+            Ok(())
+        } else if result {
+            Ok(())
+        } else {
+            Err(CommandError::silent(1))
+        }
+    }
+}
+
+/// C `git_config_colorbool`: `never`/`always`/`auto` names, else
+/// boolean (`false` → NEVER, truthy → AUTO).
+fn colorbool_value(value: Option<&str>) -> u8 {
+    let Some(v) = value else {
+        return 1; // bare key: true → AUTO
+    };
+    if v.eq_ignore_ascii_case("never") {
+        return 0;
+    }
+    if v.eq_ignore_ascii_case("always") {
+        return 2;
+    }
+    if v.eq_ignore_ascii_case("auto") {
+        return 1;
+    }
+    if parse_bool(v).unwrap_or(false) {
+        1
+    } else {
+        0
+    }
+}
+
+/// Clone the display options (C copies the struct for urlmatch).
+impl DispOpts {
+    fn clone_disp(&self) -> DispOpts {
+        DispOpts {
+            end_nul: self.end_nul,
+            omit_values: self.omit_values,
+            show_origin: self.show_origin,
+            show_scope: self.show_scope,
+            show_keys: self.show_keys,
+            cli_type: self.cli_type,
+            default_value: self.default_value.clone(),
         }
     }
 }
