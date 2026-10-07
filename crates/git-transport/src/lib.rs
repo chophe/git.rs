@@ -66,8 +66,16 @@ impl Endpoint {
 fn looks_like_scp(s: &str) -> bool {
     match s.find(':') {
         Some(i) => {
-            let host = &s[..i];
-            !host.is_empty()
+            // C scp-like form is `[user@]host:path` (connect.c).
+            let left = &s[..i];
+            let (user, host) = match left.rsplit_once('@') {
+                Some((u, h)) => (u, h),
+                None => ("", left),
+            };
+            let user_ok =
+                user.is_empty() || user.bytes().all(|b| b.is_ascii_alphanumeric() || b".-_".contains(&b));
+            user_ok
+                && !host.is_empty()
                 && host.bytes().all(|b| b.is_ascii_alphanumeric() || b".-_".contains(&b))
                 && !s[i + 1..].starts_with('/')
         }
