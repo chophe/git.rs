@@ -359,6 +359,10 @@ fn read_pathspec_file(
 ) -> Result<Vec<String>, CommandError> {
     let mut input: Box<dyn BufRead> = if file == "-" {
         Box::new(std::io::stdin().lock())
+    } else if file.is_empty() {
+        // An empty pathspec file name yields no pathspecs at all
+        // (C reads through `strbuf_read_file`, which never opens "").
+        return Ok(Vec::new());
     } else {
         let full = ctx.cwd.join(file);
         let input = std::fs::File::open(&full).map_err(|e| {
