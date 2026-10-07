@@ -105,6 +105,34 @@ impl fmt::Display for CommandError {
 
 impl Error for CommandError {}
 
+/// Render a config error with its file name relative to `base`, the
+/// way C reports the file it discovered.
+pub(crate) fn config_error_text(e: &git_config::ConfigError, base: &std::path::Path) -> String {
+    match e {
+        git_config::ConfigError::BadLine { line, file } => {
+            let name = file
+                .as_ref()
+                .map(|p| relative_display(base, p))
+                .unwrap_or_else(|| ".git/config".to_string());
+            format!("bad config line {line} in file {name}")
+        }
+        other => other.to_string(),
+    }
+}
+
+/// `path` relative to `base` when it is below it, else as given.
+pub(crate) fn relative_display(base: &std::path::Path, path: &std::path::Path) -> String {
+    if path.is_absolute() {
+        let base = std::fs::canonicalize(base).unwrap_or_else(|_| base.to_path_buf());
+        if let Ok(rel) = path.strip_prefix(&base) {
+            if !rel.as_os_str().is_empty() {
+                return rel.display().to_string();
+            }
+        }
+    }
+    path.display().to_string()
+}
+
 impl From<RepoError> for CommandError {
     fn from(e: RepoError) -> CommandError {
         CommandError::fatal(format!("fatal: {e}"))
@@ -269,9 +297,8 @@ impl RepoContext {
         }
     }
 
-    /// Discover the repository for this context, applying config overrides.
-    pub fn repository(&self) -> Result<Repository, CommandError> {
-        let env = RepoEnv {
+    fn repo_env(&self) -> RepoEnv {
+        RepoEnv {
             git_dir: self.git_dir.clone(),
             work_tree: self.work_tree.clone(),
             common_dir: self.common_dir.clone(),
@@ -284,8 +311,28 @@ impl RepoContext {
                         .collect()
                 })
                 .unwrap_or_default(),
+        }
+    }
+
+    /// Like `repository()`, but "not a repository" is `None` instead
+    /// of an error, for commands that also work outside one (`git
+    /// config`). A broken repository config still surfaces: C reads
+    /// it eagerly, so a malformed line is fatal.
+    pub fn repository_opt(&self) -> Result<Option<Repository>, CommandError> {
+        let env = self.repo_env();
+        let mut repo = match Repository::discover_from(&self.cwd, &env) {
+            Ok(repo) => repo,
+            Err(git_core::RepoError::NotFound) => return Ok(None),
+            Err(git_core::RepoError::Config(e)) => {
+                // C names the config file as discovered (relative to the
+                // working directory), not as an absolute path.
+                return Err(CommandError::fatal(format!(
+                    "fatal: {}",
+                    config_error_text(&e, &self.cwd)
+                )));
+            }
+            Err(e) => return Err(CommandError::from(e)),
         };
-        let mut repo = Repository::discover_from(&self.cwd, &env).map_err(CommandError::from)?;
         if self.bare {
             repo.bare = true;
             repo.work_tree = None;
@@ -296,7 +343,13 @@ impl RepoContext {
         for (name, value) in &self.config_overrides {
             repo.config.set_cli(name, value.as_deref());
         }
-        Ok(repo)
+        Ok(Some(repo))
+    }
+
+    /// Discover the repository for this context, applying config overrides.
+    pub fn repository(&self) -> Result<Repository, CommandError> {
+        self.repository_opt()?
+            .ok_or_else(|| CommandError::fatal("fatal: not a git repository (or any of the parent directories)"))
     }
 }
 
