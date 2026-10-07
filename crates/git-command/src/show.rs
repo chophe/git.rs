@@ -288,12 +288,14 @@ impl Command for Show {
                         }
                         out.write_all(&header).map_err(bad_object)?;
                         if !diff.is_empty() && !header.is_empty() {
-                            if !header.ends_with(b"\n") {
-                                writeln!(out).map_err(bad_object)?;
-                            }
+                            // C writes the line prefix, then the
+                            // optional `---`, then one newline: it
+                            // never pads a message that does not end
+                            // in a newline of its own.
                             if !opts.oneline {
                                 if opts.patch && opts.output.as_deref() == Some("--stat") {
-                                    write!(out, "---").map_err(bad_object)?;
+                                    // C: `fprintf("---")` then `putc('\n')`.
+                                    writeln!(out, "---").map_err(bad_object)?;
                                 } else {
                                     writeln!(out).map_err(bad_object)?;
                                 }
