@@ -269,8 +269,9 @@ impl ConfigSet {
                 if rest.is_empty() || rest.starts_with('#') || rest.starts_with(';') {
                     continue;
                 }
-                let (key, raw_value) = split_key_value(rest);
-                let (stripped_value, cont) = strip_continuation(raw_value.trim());
+                let (key, raw_value) =
+                    split_key_value(rest).map_err(|_| ConfigError::BadLine { line: line_no, file: origin.clone() })?;
+                let (stripped_value, cont) = strip_continuation(raw_value.as_deref().unwrap_or("").trim());
                 let value = unquote_value(&stripped_value).map_err(|_| ConfigError::BadLine {
                     line: line_no,
                     file: origin.clone(),
@@ -282,7 +283,7 @@ impl ConfigSet {
                     value,
                     origin: origin.clone(),
                     lineno: line_no,
-                    value_is_null: !rest.contains('=') && rest.split_whitespace().count() < 2,
+                    value_is_null: raw_value.is_none(),
                 });
                 last_value_index = Some(self.entries.len() - 1);
                 continuation = cont;
@@ -290,8 +291,9 @@ impl ConfigSet {
             }
 
             // key [=] value
-            let (key, raw_value) = split_key_value(trimmed);
-            let (stripped_value, cont) = strip_continuation(raw_value.trim());
+            let (key, raw_value) =
+                split_key_value(trimmed).map_err(|_| ConfigError::BadLine { line: line_no, file: origin.clone() })?;
+            let (stripped_value, cont) = strip_continuation(raw_value.as_deref().unwrap_or("").trim());
             // C reports quote errors as `bad config line N`, like any other
             // malformed line (probed on the tree binary).
             let value = unquote_value(&stripped_value).map_err(|_| ConfigError::BadLine {
@@ -1145,16 +1147,29 @@ fn strip_continuation(value: &str) -> (String, bool) {
 }
 
 /// Split a `key = value` (or `key value`) line, trimming comments.
-fn split_key_value(trimmed: &str) -> (String, String) {
-    // Key names are case-insensitive (C git lowercases them).
-    let (key, value) = match trimmed.find('=') {
-        Some(i) => (trimmed[..i].trim(), trimmed[i + 1..].trim()),
-        None => match trimmed.split_once(char::is_whitespace) {
-            Some((k, v)) => (k.trim(), v.trim()),
-            None => (trimmed.trim(), ""),
-        },
+/// C `get_value`: the key is read while `iskeychar` (alnum or
+/// `-`) and lowercased, then spaces and tabs are skipped, and
+/// what follows must be the end of the line or `=` plus a value.
+/// Anything else is a parse error.
+fn split_key_value(line: &str) -> Result<(String, Option<String>), ()> {
+    let bytes = line.as_bytes();
+    // The outer loop only enters `get_value` on an alpha byte.
+    if bytes.first().is_none_or(|c| !c.is_ascii_alphabetic()) {
+        return Err(());
+    }
+    let mut end = 1;
+    while end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'-') {
+        end += 1;
+    }
+    let key = line[..end].to_ascii_lowercase();
+    let rest = line[end..].trim_start_matches([' ', '\t']);
+    if rest.is_empty() {
+        return Ok((key, None));
+    }
+    let Some(value) = rest.strip_prefix('=') else {
+        return Err(());
     };
-    (key.to_ascii_lowercase(), strip_inline_comment(value).to_string())
+    Ok((key, Some(strip_inline_comment(value).trim().to_string())))
 }
 
 /// Strip a trailing `#`/`;` comment that follows whitespace and is outside quotes.
@@ -1428,8 +1443,11 @@ mod tests {
 
     #[test]
     fn key_without_equals() {
-        let cfg = ConfigSet::parse(b"[core]\n\tfilemode true\n").unwrap();
-        assert_eq!(cfg.get("core", "filemode"), Some("true"));
+        // C `get_value`: after the key only spaces, the end of the
+        // line, or `=` may follow -- `filemode true` is a bad line.
+        assert!(ConfigSet::parse(b"[core]\n\tfilemode true\n").is_err());
+        let cfg = ConfigSet::parse(b"[core]\n\tfilemode\n").unwrap();
+        assert_eq!(cfg.get("core", "filemode"), Some(""));
     }
 
     #[test]

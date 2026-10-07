@@ -91,11 +91,11 @@ fn push_key(
     section: &str,
     subsection: &Option<String>,
     line: usize,
-    raw_value: &str,
+    raw_value: Option<&str>,
     key: String,
     continuation: &mut Option<usize>,
 ) {
-    let (stripped, cont) = strip_continuation(raw_value.trim());
+    let (stripped, cont) = strip_continuation(raw_value.unwrap_or("").trim());
     let value = unquote_value(&stripped).unwrap_or_else(|_| stripped.clone());
     let idx = spans.len();
     spans.push(KeySpan {
@@ -161,14 +161,16 @@ fn parse_doc(text: &str) -> Doc {
                     // C also parses `key = value` after `]` on the same line.
                     let rest = trimmed[end + 1..].trim();
                     if !rest.is_empty() && !rest.starts_with('#') && !rest.starts_with(';') {
-                        let (key, raw) = split_key_value(rest);
+                        let Ok((key, raw)) = split_key_value(rest) else {
+                            continue;
+                        };
                         push_key(
                             &mut kinds,
                             &mut spans,
                             &section,
                             &subsection,
                             i,
-                            &raw,
+                            raw.as_deref(),
                             key,
                             &mut continuation,
                         );
@@ -176,14 +178,16 @@ fn parse_doc(text: &str) -> Doc {
                 }
             }
         } else {
-            let (key, raw) = split_key_value(trimmed);
+            let Ok((key, raw)) = split_key_value(trimmed) else {
+                continue;
+            };
             push_key(
                 &mut kinds,
                 &mut spans,
                 &section,
                 &subsection,
                 i,
-                &raw,
+                raw.as_deref(),
                 key,
                 &mut continuation,
             );
@@ -214,6 +218,44 @@ fn find_matches(doc: &Doc, section: &str, subsection: Option<&str>, key: &str) -
 
 /// Quote a value per C `write_pair`: surrounding quotes when it starts/ends
 /// with a space or contains `;`, `#`, or `\r`; `\n`/`\t`/`"`/`\` escaped.
+/// C runs `git_parse_source` over the file before splicing, so a
+/// malformed line is fatal (`bad config line N`) rather than
+/// ignored. Returns the offending 1-based line number.
+pub fn bad_line(text: &str) -> Option<usize> {
+    for (i, line) in text.split('\n').enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with(';') {
+            continue;
+        }
+        let Some(rest) = trimmed.strip_prefix('[') else {
+            if split_key_value(trimmed).is_err() {
+                return Some(i + 1);
+            }
+            continue;
+        };
+        let Some(end) = rest.find(']') else {
+            return Some(i + 1);
+        };
+        // C `get_base_var`: keychars and '.' only (the quoted
+        // extended form is checked by the reader).
+        if rest[..end]
+            .chars()
+            .any(|c| !(c.is_ascii_alphanumeric() || c == '-' || c == '.' || c == '"' || c.is_whitespace()))
+        {
+            return Some(i + 1);
+        }
+        let after = rest[end + 1..].trim_start();
+        if !after.is_empty()
+            && !after.starts_with('#')
+            && !after.starts_with(';')
+            && split_key_value(after).is_err()
+        {
+            return Some(i + 1);
+        }
+    }
+    None
+}
+
 pub fn render_value(value: &str) -> String {
     let needs_quote = value.starts_with(' ')
         || value.ends_with(' ')
@@ -242,10 +284,13 @@ pub fn render_value(value: &str) -> String {
 /// Render a fresh pair line per C `write_pair` (`\tkey = value`), with an
 /// optional `# comment` suffix (C appends ` # comment`, dropping any old
 /// trailing comment — probed on the tree binary).
+/// Render a fresh `key = value` pair per C `store_write_pair`:
+/// `comment`, when present, is C's *prepared* comment string
+/// (`git_config_prepare_comment_string`) and is appended
+/// verbatim after the value.
 fn render_pair(key: &str, value: &str, comment: Option<&str>) -> String {
     let mut line = format!("\t{} = {}", key, render_value(value));
     if let Some(c) = comment {
-        line.push_str(" # ");
         line.push_str(c);
     }
     line
@@ -527,6 +572,23 @@ fn header_matches_section(line: &str, name: &str) -> bool {
         Some(d) => sec == &name[..d] && *sub == name[d + 1..],
         None => false,
     }
+}
+
+/// Count entries matching `section[.sub.]key`, optionally
+/// filtered by a value matcher (C `store_aux` match counting
+/// for `repo_config_set_multivar`).
+pub fn count_matches(
+    text: &str,
+    section: &str,
+    subsection: Option<&str>,
+    key: &str,
+    matcher: Option<&ValueMatcher>,
+) -> usize {
+    let doc = parse_doc(text);
+    find_matches(&doc, section, subsection, key)
+        .into_iter()
+        .filter(|&i| matcher_accepts(matcher, &doc.spans[i].value))
+        .count()
 }
 
 /// Rename a section (C `--rename-section` → `write_section(new_name)`): every
