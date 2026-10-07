@@ -1003,10 +1003,11 @@ pub(crate) fn spec_matches(spec: &str, path: &str) -> bool {
 /// `/` (C calls wildmatch without WM_PATHNAME), unlike `.gitignore`.
 pub(crate) fn spec_matches_glob(spec: &str, path: &str) -> bool {
     if spec.contains(['*', '?', '[']) {
-        // Pathspec globs use WM_PATHNAME: `*` does not cross `/`, matching
-        // C's `wildmatch(ps->pattern, name, WM_PATHNAME)` in pathspec.c.
-        git_attributes::wildmatch(spec, path, git_attributes::wildmatch_flags::PATHNAME)
-            == git_attributes::WM_MATCH
+        // C `git_fnmatch` (pathspec.c) matches a plain pathspec with
+        // `wildmatch(pattern, name, 0)`: `*` crosses `/`. Only the
+        // `:(glob)` magic switches on WM_PATHNAME, which this
+        // caller never passes.
+        git_attributes::wildmatch(spec, path, 0) == git_attributes::WM_MATCH
     } else {
         spec_matches(spec, path)
     }
